@@ -12,6 +12,27 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets LinguistTools)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets LinguistTools)
 
+# Find GDAL
+find_package(GDAL REQUIRED)
+
+# Debug output to see what's found
+message(STATUS "GDAL_INCLUDE_DIR: ${GDAL_INCLUDE_DIR}")
+message(STATUS "GDAL_LIBRARY: ${GDAL_LIBRARY}")
+
+# Strip quotes from GDAL paths if present (Windows specific issue with Qt Creator)
+string(REPLACE "\"" "" GDAL_INCLUDE_DIR_CLEAN "${GDAL_INCLUDE_DIR}")
+string(REPLACE "\"" "" GDAL_LIBRARY_CLEAN "${GDAL_LIBRARY}")
+
+# Check if the library path already has a .lib extension and make sure it's preserved
+if(NOT GDAL_LIBRARY_CLEAN MATCHES "[.]lib$")
+    # Add .lib extension if missing, important for Windows
+    set(GDAL_LIBRARY_CLEAN "${GDAL_LIBRARY_CLEAN}.lib")
+endif()
+
+# Debug after cleaning
+message(STATUS "GDAL_INCLUDE_DIR_CLEAN: ${GDAL_INCLUDE_DIR_CLEAN}")
+message(STATUS "GDAL_LIBRARY_CLEAN: ${GDAL_LIBRARY_CLEAN}")
+
 set(TS_FILES BTP_GUI_en_IN.ts)
 
 set(PROJECT_SOURCES
@@ -51,8 +72,14 @@ else()
     qt5_create_translation(QM_FILES ${CMAKE_SOURCE_DIR} ${TS_FILES})
 endif()
 
+# Add GDAL include directories
+target_include_directories(BTP_GUI PRIVATE 
+    ${GDAL_INCLUDE_DIR_CLEAN}
+)
+
 target_link_libraries(BTP_GUI PRIVATE 
     Qt${QT_VERSION_MAJOR}::Widgets
+    ${GDAL_LIBRARY_CLEAN}
 )
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
@@ -78,4 +105,39 @@ install(TARGETS BTP_GUI
 
 if(QT_VERSION_MAJOR EQUAL 6)
     qt_finalize_executable(BTP_GUI)
+endif()
+
+# Add code to copy GDAL DLLs to the output directory
+if(WIN32)
+    # Find the GDAL DLL
+    string(REPLACE "lib/gdal.lib" "bin/gdal.dll" GDAL_DLL "${GDAL_LIBRARY_CLEAN}")
+    
+    # Check if the DLL exists
+    if(EXISTS "${GDAL_DLL}")
+        message(STATUS "Found GDAL DLL at ${GDAL_DLL}")
+        
+        # Add post-build command to copy the DLL
+        add_custom_command(TARGET BTP_GUI POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${GDAL_DLL}"
+                $<TARGET_FILE_DIR:BTP_GUI>
+            COMMENT "Copying GDAL DLL to output directory"
+        )
+    else()
+        # Try alternate path
+        string(REPLACE "apps/gdal-dev/lib/gdal.lib" "bin/gdal.dll" GDAL_DLL_ALT "${GDAL_LIBRARY_CLEAN}")
+        if(EXISTS "${GDAL_DLL_ALT}")
+            message(STATUS "Found GDAL DLL at alternate location ${GDAL_DLL_ALT}")
+            
+            # Add post-build command to copy the DLL
+            add_custom_command(TARGET BTP_GUI POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${GDAL_DLL_ALT}"
+                    $<TARGET_FILE_DIR:BTP_GUI>
+                COMMENT "Copying GDAL DLL to output directory"
+            )
+        else()
+            message(WARNING "GDAL DLL not found at ${GDAL_DLL} or ${GDAL_DLL_ALT}. You may need to manually copy it to the executable directory.")
+        endif()
+    endif()
 endif()

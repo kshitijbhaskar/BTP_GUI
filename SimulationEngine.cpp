@@ -11,11 +11,16 @@
 #include <QPainter>
 #include <QColor>
 #include <QPen>
+#include <QFileInfo>
+
+// Include GDAL headers
+#include "gdal_priv.h"
+#include "ogr_spatialref.h"
 
 SimulationEngine::SimulationEngine(QObject *parent)
     : QObject(parent),
     nx(0), ny(0),
-    resolution(0.25), // default cell resolution
+    resolution(0.25), // default cell resolution, will be overwritten by GeoTIFF
     n_manning(0.03),
     Ks(1e-6),
     min_depth(1e-5),
@@ -26,6 +31,7 @@ SimulationEngine::SimulationEngine(QObject *parent)
     useTimeVaryingRainfall(false),
     outletRow(0),
     useManualOutlets(false),
+    outletPercentile(0.1), // Default to 10%
     drainageVolume(0.0),
     showGrid(true),
     gridInterval(10)
@@ -34,46 +40,204 @@ SimulationEngine::SimulationEngine(QObject *parent)
 
 bool SimulationEngine::loadDEM(const QString &filename)
 {
-    QFile file(filename);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-        return false;
+    // Determine file type based on extension
+    QFileInfo fileInfo(filename);
+    QString suffix = fileInfo.suffix().toLower();
 
-    QTextStream in(&file);
-    std::vector<std::vector<double>> tmpDEM;
-    while (!in.atEnd())
+    // Register GDAL drivers (only needs to be done once)
+    GDALAllRegister();
+
+    if (suffix == "tif" || suffix == "tiff")
     {
-        QString line = in.readLine().trimmed();
-        if (line.isEmpty())
-            continue;
-        // Use QRegularExpression and Qt::SkipEmptyParts instead of QRegExp and QString::SkipEmptyParts.
-        QStringList tokens = line.split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts);
-        std::vector<double> row;
-        for (const QString &str : tokens)
+        // --- Load GeoTIFF using GDAL --- 
+        qDebug() << "Attempting to load GeoTIFF file:" << filename;
+        GDALDataset *poDataset = (GDALDataset *) GDALOpen(filename.toStdString().c_str(), GA_ReadOnly);
+        
+        if (poDataset == NULL)
         {
-            bool ok;
-            double val = str.toDouble(&ok);
-            if (!ok)
-                return false;
-            row.push_back(val);
+            qDebug() << "GDAL failed to open file:" << filename;
+            qDebug() << "GDAL Error:" << CPLGetLastErrorMsg();
+            return false;
         }
-        tmpDEM.push_back(row);
-    }
-    file.close();
+        
+        // Get raster dimensions
+        nx = poDataset->GetRasterYSize(); // Number of rows
+        ny = poDataset->GetRasterXSize(); // Number of columns
+        
+        qDebug() << "DEM dimensions (nx, ny):" << nx << ny;
+        
+        if (nx <= 0 || ny <= 0) {
+            qDebug() << "Invalid dimensions read from GeoTIFF.";
+            GDALClose(poDataset);
+            return false;
+        }
+        
+        // Get geotransform for resolution
+        double adfGeoTransform[6];
+        if (poDataset->GetGeoTransform(adfGeoTransform) == CE_None)
+        {
+            // adfGeoTransform[1] is pixel width (X resolution)
+            // adfGeoTransform[5] is pixel height (Y resolution, usually negative)
+            double resX = std::abs(adfGeoTransform[1]);
+            double resY = std::abs(adfGeoTransform[5]);
+            
+            // Debug output to help diagnose resolution issues
+            qDebug() << "Full GeoTransform array:";
+            for (int i = 0; i < 6; i++) {
+                qDebug() << "  adfGeoTransform[" << i << "] =" << adfGeoTransform[i];
+            }
+            
+            // Check for valid resolution values
+            if (resX < 0.000001 || resY < 0.000001) {
+                qDebug() << "Warning: Invalid GeoTransform values detected. Using default resolution:" << resolution;
+            } else {
+                // Assuming square pixels for simplicity, check if they are close
+                if (std::abs(resX - resY) < 1e-6) {
+                    resolution = resX;
+                    qDebug() << "GeoTIFF resolution set to:" << resolution << "meters/pixel";
+                } else {
+                    qDebug() << "Warning: Non-square pixels detected (resX:" << resX << ", resY:" << resY << "). Using X resolution.";
+                    resolution = resX;
+                }
+                
+                // Apply a sanity check for resolution bounds (prevent extremely small or large values)
+                if (resolution < 0.001) {
+                    qDebug() << "Warning: Resolution too small (" << resolution << "), clamping to 0.001 m";
+                    resolution = 0.001;
+                } else if (resolution > 1000) {
+                    qDebug() << "Warning: Resolution too large (" << resolution << "), clamping to 1000 m";
+                    resolution = 1000;
+                }
+                qDebug() << "Final resolution set to:" << resolution << "meters/pixel";
+            }
+        }
+        else
+        {
+            qDebug() << "Warning: Could not get GeoTransform from GeoTIFF. Using default resolution:" << resolution;
+            // Keep the default or user-set resolution if geotransform is missing
+        }
+        
+        // Get the first raster band (assuming single band DEM)
+        GDALRasterBand *poBand = poDataset->GetRasterBand(1);
+        if (poBand == NULL) {
+             qDebug() << "Could not get raster band 1 from GeoTIFF.";
+             GDALClose(poDataset);
+             return false;
+        }
 
-    // Assume uniform number of columns
-    if (tmpDEM.empty())
+        // Get NoData value if available
+        int bGotNoData;
+        double noDataValue = poBand->GetNoDataValue(&bGotNoData);
+        if (!bGotNoData) {
+            noDataValue = -999999.0; // Use a default if not specified
+            qDebug() << "NoData value not found in TIF, using default:" << noDataValue;
+        }
+        qDebug() << "Using NoData value:" << noDataValue;
+
+        // Allocate memory for DEM data
+        dem.assign(nx, std::vector<double>(ny));
+        std::vector<double> rowData(ny);
+
+        // Read data row by row
+        bool success = true;
+        for (int i = 0; i < nx; ++i)
+        {
+            CPLErr eErr = poBand->RasterIO(GF_Read, 0, i, ny, 1, 
+                                         &rowData[0], ny, 1, GDT_Float64, 
+                                         0, 0);
+            if (eErr != CE_None)
+            {
+                qDebug() << "GDAL RasterIO failed reading row" << i;
+                success = false;
+                break;
+            }
+            // Assign row data, handle NoData values
+            for (int j = 0; j < ny; ++j) {
+                if (bGotNoData && std::abs(rowData[j] - noDataValue) < 1e-6) { // Compare with tolerance
+                    dem[i][j] = -999999.0; // Standard internal NoData value
+                } else {
+                    dem[i][j] = rowData[j];
+                }
+            }
+        }
+
+        // Close the GDAL dataset
+        GDALClose(poDataset);
+        
+        if (!success) {
+            return false;
+        }
+
+    }
+    else if (suffix == "csv")
+    {
+        // --- Load CSV using original method --- 
+        qDebug() << "Attempting to load CSV file:" << filename;
+        QFile file(filename);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+            return false;
+
+        QTextStream in(&file);
+        std::vector<std::vector<double>> tmpDEM;
+        while (!in.atEnd())
+        {
+            QString line = in.readLine().trimmed();
+            if (line.isEmpty())
+                continue;
+            // Use QRegularExpression and Qt::SkipEmptyParts instead of QRegExp and QString::SkipEmptyParts.
+            QStringList tokens = line.split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts);
+            std::vector<double> row;
+            for (const QString &str : tokens)
+            {
+                bool ok;
+                double val = str.toDouble(&ok);
+                if (!ok)
+                    return false;
+                row.push_back(val);
+            }
+            tmpDEM.push_back(row);
+        }
+        file.close();
+
+        // Assume uniform number of columns
+        if (tmpDEM.empty())
+            return false;
+            
+        // Store DEM and dimensions
+        dem = tmpDEM;
+        nx = dem.size();
+        ny = (nx > 0) ? dem[0].size() : 0;
+        
+        // Keep the user-defined or default resolution for CSV
+        qDebug() << "CSV loaded. Dimensions (nx, ny):" << nx << ny << ", Using resolution:" << resolution;
+    }
+    else
+    {
+        qDebug() << "Unsupported file format:" << suffix;
         return false;
-    nx = tmpDEM.size();
-    ny = tmpDEM[0].size();
-    // Store DEM and initialize water depth grid (h) to zero
-    dem = tmpDEM;
+    }
+
+    // Common post-loading steps for both TIF and CSV
+    if (nx <= 0 || ny <= 0) {
+        qDebug() << "Error: Invalid grid dimensions after loading.";
+        return false;
+    }
+    
+    // Initialize water depth grid (h) to zero
     h.assign(nx, std::vector<double>(ny, 0.0));
 
-    // Determine the outlet along the bottom row (last row)
-    outletRow = nx - 1;
+    // Initialize outlet-related members
+    outletRow = nx - 1; // Default outlet row (may be changed by methods)
     useManualOutlets = false;
-    computeDefaultAutomaticOutletCells();
+    computeDefaultAutomaticOutletCells(); // Compute default outlets based on loaded DEM
     drainageVolume = 0.0;
+    
+    qDebug() << "DEM loaded successfully. nx:" << nx << "ny:" << ny << "Resolution:" << resolution;
+    
+    // Perform initial depression filling and flow accumulation
+    // fillDepressions(); // Commented out - Implementation missing
+    // calculateFlowAccumulation(); // Commented out - Implementation missing
+    
     return true;
 }
 
@@ -114,6 +278,7 @@ void SimulationEngine::configureOutletsByPercentile(double percentile)
         percentile = 0.1; // Default to 10%
     }
     
+    outletPercentile = percentile;  // Store the percentile value
     useManualOutlets = false;
     computeOutletCellsByPercentile(percentile);
 }
@@ -147,14 +312,55 @@ void SimulationEngine::setManualOutletCells(const QVector<QPoint> &cells)
     }
 }
 
-void SimulationEngine::initSimulation()
+bool SimulationEngine::initSimulation()
 {
+    // Make basic validation checks
+    if (nx <= 0 || ny <= 0) {
+        qDebug() << "ERROR: Cannot initialize simulation - invalid grid dimensions:" << nx << "x" << ny;
+        return false;
+    }
+    
+    // Check if we have any valid outlet cells
+    if (outletCells.empty()) {
+        qDebug() << "WARNING: No outlet cells defined. Attempting to compute default outlets.";
+        computeDefaultAutomaticOutletCells();
+        
+        // Check again after attempting to compute default outlets
+        if (outletCells.empty()) {
+            qDebug() << "ERROR: Still no outlet cells after computing defaults. Cannot initialize simulation.";
+            return false;
+        }
+    }
+    
+    // Validate simulation parameters
+    if (resolution <= 0) {
+        qDebug() << "ERROR: Invalid cell resolution:" << resolution;
+        return false;
+    }
+    
+    if (n_manning <= 0) {
+        qDebug() << "ERROR: Invalid Manning coefficient:" << n_manning;
+        return false;
+    }
+    
+    if (totalTime <= 0) {
+        qDebug() << "ERROR: Invalid total simulation time:" << totalTime;
+        return false;
+    }
+    
     // Reset simulation time and water depth grid
     time = 0.0;
     dt = 1.0;
     drainageVolume = 0.0;
-    for (int i = 0; i < nx; i++)
-        std::fill(h[i].begin(), h[i].end(), 0.0);
+    
+    // Initialize water depth grid
+    try {
+        h.assign(nx, std::vector<double>(ny, 0.0));
+    } 
+    catch (const std::exception& e) {
+        qDebug() << "ERROR: Failed to initialize water depth grid:" << e.what();
+        return false;
+    }
     
     // Clear previous time series data
     drainageTimeSeries.clear();
@@ -175,6 +381,8 @@ void SimulationEngine::initSimulation()
     // Initialize per-outlet drainage tracking for all outlet cells
     qDebug() << "Initializing drainage tracking for outlets";
     
+    perOutletDrainage.clear();  // Ensure we start with a clean state
+    
     if (useManualOutlets) {
         qDebug() << "Using" << manualOutletCells.size() << "manual outlet cells";
         for (const QPoint &p : manualOutletCells) {
@@ -183,20 +391,18 @@ void SimulationEngine::initSimulation()
         }
     } else {
         qDebug() << "Using" << outletCells.size() << "automatic outlet cells";
-        for (const auto& idx : outletCells) {
-            // Calculate 2D coordinates from 1D index
-            int i = idx / ny;  // row
-            int j = idx % ny;  // column
-            
-            // Create QPoint for the outlet cell
-            QPoint outletPoint(i, j);
-            perOutletDrainage[outletPoint] = 0.0;
-            qDebug() << "  Added outlet at:" << i << j;
+        QVector<QPoint> autoOutlets = getAutomaticOutletCells();
+        for (const QPoint &p : autoOutlets) {
+            perOutletDrainage[p] = 0.0;
+            qDebug() << "  Added automatic outlet at:" << p.x() << p.y();
         }
     }
     
     // Add initial data point (time=0, drainage=0)
     drainageTimeSeries.append(qMakePair(0.0, 0.0));
+    
+    qDebug() << "Simulation initialization successful";
+    return true;
 }
 
 // Compute outletCells based on lowest elevation percentile along the entire boundary
@@ -517,6 +723,10 @@ void SimulationEngine::stepSimulation()
     drainageVolume += outflow;
     drainageTimeSeries.append(qMakePair(time + dt, drainageVolume));
     time += dt; // Use fixed dt for now
+
+    // Emit signals to update UI
+    emit simulationTimeUpdated(time, totalTime);
+    emit simulationStepCompleted(getWaterDepthImage());
 }
 
 double SimulationEngine::getTotalDrainage() const
@@ -756,7 +966,23 @@ QImage SimulationEngine::getDEMPreviewImage() const
 
     // Mark selected outlet cells (inside the DEM area)
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(255, 0, 0, 150)); // Slightly more transparent red
+    
+    // First draw automatic outlets (if any and not using manual)
+    if (!useManualOutlets) {
+        painter.setBrush(QColor(0, 150, 255, 150)); // Blue for automatic outlets
+        QVector<QPoint> autoOutlets = getAutomaticOutletCells();
+        for (const QPoint &p : autoOutlets) {
+            if (p.x() >= 0 && p.x() < nx && p.y() >= 0 && p.y() < ny) {
+                int cellX = demRect.left() + p.y() * scale;
+                int cellY = demRect.top() + p.x() * scale;
+                // Draw a circle for automatic outlets
+                painter.drawEllipse(cellX, cellY, scale, scale);
+            }
+        }
+    }
+    
+    // Draw manual outlets on top
+    painter.setBrush(QColor(255, 0, 0, 150)); // Red for manual outlets
     for (const QPoint &p : manualOutletCells) {
         if (p.x() >= 0 && p.x() < nx && p.y() >= 0 && p.y() < ny) {
             int cellX = demRect.left() + p.y() * scale;
@@ -795,7 +1021,16 @@ QImage SimulationEngine::getDEMPreviewImage() const
     painter.setPen(Qt::NoPen);
     painter.drawEllipse(legendX + legendWidth/2 - 3, legendY + legendHeight + 5, 6, 6); // Small circle
     painter.setPen(Qt::black);
-    painter.drawText(legendX + legendWidth + 2, legendY + legendHeight + 12, "Outlet");
+    painter.drawText(legendX + legendWidth + 2, legendY + legendHeight + 12, "Manual Outlet");
+    
+    // Add automatic outlet to legend if not using manual outlets
+    if (!useManualOutlets) {
+        painter.setBrush(QColor(0, 150, 255, 150));
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(legendX + legendWidth/2 - 3, legendY + legendHeight + 20, 6, 6); // Small circle
+        painter.setPen(Qt::black);
+        painter.drawText(legendX + legendWidth + 2, legendY + legendHeight + 27, "Auto Outlet");
+    }
 
     // Instructions and Info (Top Margin) - Simplified
     QFont infoFont = painter.font();
@@ -1245,5 +1480,5 @@ QImage SimulationEngine::getFlowAccumulationImage() const
 
 void SimulationEngine::computeDefaultAutomaticOutletCells()
 {
-    computeOutletCellsByPercentile(0.1); // Default to lowest 10%
+    computeOutletCellsByPercentile(outletPercentile);
 }

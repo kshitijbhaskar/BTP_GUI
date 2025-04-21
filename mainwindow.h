@@ -52,6 +52,7 @@ private slots:
     void onSimDisplayClicked(QPoint pos);
     void updateVisualization();
     void resetVisualizationView();
+    void returnToPreviousTab();
     // Display toggle options
     void onToggleGrid(bool checked);
     void onToggleRulers(bool checked);
@@ -73,6 +74,7 @@ private:
     void createDEMPreviewPanel();
     void createRainfallPanel(QWidget* parent = nullptr);
     void setupConnections();
+    void setupSimulationEngineConnections();
     
     // Helper methods for manual outlet selection
     void showDEMPreview();
@@ -84,7 +86,7 @@ private:
     void updateOutletTable();
     
     // Unified view methods that work for both tabs
-    void updateDisplay(QLabel* displayLabel, const QImage& image, QLabel* statusLabel, const QString& statusPrefix, const QVector<QPoint>* selectedPoints);
+    void updateDisplay(QLabel* displayLabel, const QImage& image, QLabel* statusLabel, const QString& statusText, QPainter* customPainter = nullptr);
     void resetDisplayView(QLabel* displayLabel, QLabel* statusLabel, const QString& statusMessage);
     void zoomDisplay(QLabel* displayLabel, bool zoomIn);
     void panDisplay(const QPoint& delta);
@@ -141,7 +143,7 @@ private:
     
     // Visualization Elements
     ClickableLabel *simDisplayLabel;     // Area where DEM and outlet selection is shown (changed from QLabel* to ClickableLabel*)
-    QLabel *resultDisplayLabel;          // Area where simulation results are shown
+    ClickableLabel *resultDisplayLabel;  // Area where simulation results are shown (changed from QLabel to ClickableLabel)
     
     // Output Controls
     QPushButton *saveResultsButton;
@@ -153,6 +155,7 @@ private:
     QWidget *inputTab;
     QWidget *visualizationTab;
     QWidget *demPreviewTab;
+    int previousTabIndex; // To store the previous tab index
     
     // Simulation engine and control
     SimulationEngine *simEngine;

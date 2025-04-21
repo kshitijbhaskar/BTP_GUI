@@ -10,6 +10,10 @@
 #include <QPair>
 #include <QMap>
 
+// GDAL includes might go here, but often better kept in .cpp
+// Forward declarations if needed (unlikely for basic usage)
+// class GDALDataset; 
+
 // Define operator< for QPoint to use with QMap
 // This is needed because QPoint doesn't have a built-in operator<
 inline bool operator<(const QPoint& a, const QPoint& b) {
@@ -25,8 +29,9 @@ class SimulationEngine : public QObject
 public:
     explicit SimulationEngine(QObject *parent = nullptr);
 
-    // Load DEM data from CSV file.
+    // Load DEM data from CSV or GeoTIFF file.
     // The CSV must contain only elevation values arranged as rows.
+    // GeoTIFF files are read using GDAL.
     bool loadDEM(const QString &filename);
 
     // Parameter setters
@@ -34,6 +39,7 @@ public:
     void setManningCoefficient(double coefficient);
     void setInfiltrationRate(double rate);
     void setMinWaterDepth(double depth);
+    // Resolution is now often set based on the loaded DEM (especially for GeoTIFF)
     void setCellResolution(double res);
     void setTotalTime(double time);
     
@@ -47,9 +53,10 @@ public:
     // Outlet configuration methods
     void configureOutletsByPercentile(double percentile);
     void setManualOutletCells(const QVector<QPoint> &cells);
+    double getOutletPercentile() const { return outletPercentile; }
 
     // Initialize simulation (reset time, water depth grid, etc.)
-    void initSimulation();
+    bool initSimulation();
 
     // Perform one simulation step
     void stepSimulation();
@@ -97,9 +104,16 @@ public:
     // New method to get automatic outlet cells for display purposes
     QVector<QPoint> getAutomaticOutletCells() const;
 
+signals:
+    // Signal emitted after each simulation step with the current time
+    void simulationTimeUpdated(double currentTime, double totalTime);
+    // Signal emitted when the simulation step is complete
+    void simulationStepCompleted(const QImage& waterDepthImage);
+
 private:
     // Grid dimensions
     int nx, ny;
+    // Resolution is now often derived from the GeoTIFF's geotransform
     double resolution;  // meters per cell
 
     // DEM and water depth grids
@@ -127,6 +141,7 @@ private:
     std::vector<int> outletCells;
     int outletRow;
     bool useManualOutlets;
+    double outletPercentile;  // The percentile used for automatic outlet selection
     QVector<QPoint> manualOutletCells;
 
     // Total drainage volume (m^3) over time (accumulated discharge)

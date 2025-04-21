@@ -24,6 +24,7 @@
 #include <QDir>
 #include <QHeaderView>
 #include <algorithm>
+#include <QStatusBar>
 
 // Custom clickable QLabel subclass to handle mouse clicks for outlet selection
 class ClickableLabel : public QLabel {
@@ -108,7 +109,8 @@ MainWindow::MainWindow(QWidget *parent)
       currentPixmapSize(0, 0),
       zoomLevel(1.0f),
       panOffset(0, 0),
-      isPanning(false)
+      isPanning(false),
+      previousTabIndex(0) // Initialize previousTabIndex
 {
     // Set application style for a modern look
     QApplication::setStyle(QStyleFactory::create("Fusion"));
@@ -187,6 +189,9 @@ void MainWindow::setupUI()
     
     // Create simulation engine
     simEngine = new SimulationEngine(this);
+    
+    // Setup simulation engine connections
+    setupSimulationEngineConnections();
     
     // Initialize timers
     simTimer = new QTimer(this);
@@ -337,78 +342,6 @@ void MainWindow::createInputPanel()
     // Add the group to the input tab
     static_cast<QVBoxLayout*>(inputTab->layout())->addWidget(simulationParamGroup);
     
-    // ======== SIMULATION CONTROL GROUP (Moved Here) ======== 
-    QGroupBox *controlGroup = new QGroupBox("Simulation Control", inputTab);
-    QVBoxLayout *controlLayout = new QVBoxLayout();
-    
-    // Control Buttons
-    QHBoxLayout *buttonLayout = new QHBoxLayout();
-    startButton = new QPushButton("Start");
-    pauseButton = new QPushButton("Pause");
-    stopButton = new QPushButton("Stop");
-    
-    // Add buttons to layout
-    buttonLayout->addWidget(startButton);
-    buttonLayout->addWidget(pauseButton);
-    buttonLayout->addWidget(stopButton);
-    controlLayout->addLayout(buttonLayout);
-    
-    // Add progress bar below buttons
-    simulationProgress = new QProgressBar();
-    simulationProgress->setRange(0, 100);
-    simulationProgress->setValue(0);
-    controlLayout->addWidget(simulationProgress);
-    
-    // Add time elapsed and drainage volume labels
-    timeElapsedLabel = new QLabel("Time: 0.0 s");
-    controlLayout->addWidget(timeElapsedLabel);
-    
-    drainageVolumeLabel = new QLabel("Drainage Volume: 0.0 m³");
-    controlLayout->addWidget(drainageVolumeLabel);
-    
-    // Set the layout to the control group
-    controlGroup->setLayout(controlLayout);
-    
-    // Add the control group to the input tab
-    static_cast<QVBoxLayout*>(inputTab->layout())->addWidget(controlGroup);
-    
-    // ======== OUTLET CONTROL GROUP ======== 
-    QGroupBox *outletControlGroup = new QGroupBox("Outlet Control", inputTab);
-    QHBoxLayout *outletControlLayout = new QHBoxLayout();
-    
-    // Add buttons for outlet control
-    selectOutletButton = new QPushButton("Select Outlets");
-    clearOutletsButton = new QPushButton("Clear Outlets");
-    
-    outletControlLayout->addWidget(selectOutletButton);
-    outletControlLayout->addWidget(clearOutletsButton);
-    
-    // Set the layout to the outlet control group
-    outletControlGroup->setLayout(outletControlLayout);
-    
-    // Add the outlet control group to the input tab
-    static_cast<QVBoxLayout*>(inputTab->layout())->addWidget(outletControlGroup);
-    
-    // Add a horizontal line to separate sections
-    QFrame *line = new QFrame();
-    line->setFrameShape(QFrame::HLine);
-    line->setFrameShadow(QFrame::Sunken);
-    static_cast<QVBoxLayout*>(inputTab->layout())->addWidget(line);
-    
-    // ======== RESULTS GROUP (Moved Save Button Here) ======== 
-    QGroupBox *resultsGroup = new QGroupBox("Results", inputTab);
-    QVBoxLayout *resultsLayout = new QVBoxLayout();
-    
-    // Add save button
-    saveResultsButton = new QPushButton("Save Results");
-    resultsLayout->addWidget(saveResultsButton);
-    
-    // Set the layout to the results group
-    resultsGroup->setLayout(resultsLayout);
-    
-    // Add the results group to the input tab
-    static_cast<QVBoxLayout*>(inputTab->layout())->addWidget(resultsGroup);
-
     // Add vertical spacer to push everything up
     static_cast<QVBoxLayout*>(inputTab->layout())->addStretch();
 }
@@ -561,7 +494,49 @@ void MainWindow::createRainfallPanel(QWidget* parent)
 
 void MainWindow::createVisualizationPanel()
 {
-    QVBoxLayout *visualizationLayout = new QVBoxLayout(visualizationTab);
+    // Create layout for visualization tab
+    QVBoxLayout *visLayout = new QVBoxLayout(visualizationTab);
+    
+    // Create a top controls group box
+    QGroupBox *visControlsGroup = new QGroupBox("Simulation Controls", visualizationTab);
+    QHBoxLayout *controlsLayout = new QHBoxLayout();
+    
+    // Add visualization controls (buttons)
+    startButton = new QPushButton("Start", visualizationTab);
+    pauseButton = new QPushButton("Pause", visualizationTab);
+    stopButton = new QPushButton("Stop", visualizationTab);
+    saveResultsButton = new QPushButton("Save Results", visualizationTab);
+    
+    // Add navigation button to return to previous tab
+    QPushButton *returnButton = new QPushButton("Return to Previous Tab", visualizationTab);
+    returnButton->setToolTip("Click to return to the previous tab you were viewing");
+    connect(returnButton, &QPushButton::clicked, this, &MainWindow::returnToPreviousTab);
+    
+    controlsLayout->addWidget(startButton);
+    controlsLayout->addWidget(pauseButton);
+    controlsLayout->addWidget(stopButton);
+    controlsLayout->addWidget(saveResultsButton);
+    controlsLayout->addWidget(returnButton);
+    visControlsGroup->setLayout(controlsLayout);
+    
+    // Progress indicators
+    QGroupBox *progressGroup = new QGroupBox("Simulation Progress", visualizationTab);
+    QHBoxLayout *progressLayout = new QHBoxLayout();
+    
+    simulationProgress = new QProgressBar(visualizationTab);
+    simulationProgress->setRange(0, 100);
+    simulationProgress->setValue(0);
+    timeElapsedLabel = new QLabel("Time: 0 s", visualizationTab);
+    drainageVolumeLabel = new QLabel("Drainage: 0 m³", visualizationTab);
+    
+    progressLayout->addWidget(simulationProgress, 1);
+    progressLayout->addWidget(timeElapsedLabel);
+    progressLayout->addWidget(drainageVolumeLabel);
+    progressGroup->setLayout(progressLayout);
+    
+    // Add to main layout
+    visLayout->addWidget(visControlsGroup);
+    visLayout->addWidget(progressGroup);
     
     // Create a horizontal split for the visualization area and outlet table
     QHBoxLayout *splitLayout = new QHBoxLayout();
@@ -581,7 +556,7 @@ void MainWindow::createVisualizationPanel()
     titleFont.setBold(true);
     titleLabel->setFont(titleFont);
     
-    // Change QLabel to ClickableLabel for interaction support
+    // Create a ClickableLabel for the result display with interaction support
     resultDisplayLabel = new ClickableLabel(scrollContent);
     resultDisplayLabel->setText("Simulation not started");
     resultDisplayLabel->setAlignment(Qt::AlignCenter);
@@ -666,10 +641,10 @@ void MainWindow::createVisualizationPanel()
     connect(gridIntervalSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::onGridIntervalChanged);
     
     // Add components to layout
-    visualizationLayout->addLayout(splitLayout);
-    visualizationLayout->addLayout(zoomLayout);
-    visualizationLayout->addWidget(resultsOutputLabel);
-    visualizationLayout->addWidget(displayOptionsGroup);
+    visLayout->addLayout(splitLayout);
+    visLayout->addLayout(zoomLayout);
+    visLayout->addWidget(resultsOutputLabel);
+    visLayout->addWidget(displayOptionsGroup);
 }
 
 void MainWindow::createDEMPreviewPanel()
@@ -826,20 +801,12 @@ void MainWindow::setupConnections()
     // Connect manual outlet selection mode checkbox
     connect(manualOutletCheckbox, &QCheckBox::toggled, this, &MainWindow::onManualOutletCellsToggled);
     
-    // Connect clickable result display in the visualization tab
-    ClickableLabel *clickableResultDisplay = dynamic_cast<ClickableLabel*>(resultDisplayLabel);
-    if (clickableResultDisplay) {
-        connect(clickableResultDisplay, &ClickableLabel::clicked, this, &MainWindow::onResultDisplayClicked);
-        connect(clickableResultDisplay, &ClickableLabel::mouseDragged, this, [this](QPoint delta) {
-            panVisualization(delta);
-        });
-        connect(clickableResultDisplay, &ClickableLabel::mouseWheelScrolled, this, [this](int delta) {
-            zoomVisualization(delta);
-        });
-        connect(clickableResultDisplay, &ClickableLabel::doubleClicked, this, 
-                [this]() {
-                    resetVisualizationView();
-                });
+    // Connect the result display for mouse interaction
+    if (resultDisplayLabel) {
+        connect(resultDisplayLabel, &ClickableLabel::clicked, this, &MainWindow::onResultDisplayClicked);
+        connect(resultDisplayLabel, &ClickableLabel::mouseDragged, this, &MainWindow::panVisualization);
+        connect(resultDisplayLabel, &ClickableLabel::mouseWheelScrolled, this, &MainWindow::zoomVisualization);
+        connect(resultDisplayLabel, &ClickableLabel::doubleClicked, this, &MainWindow::resetVisualizationView);
     }
     
     // Connect tab changes
@@ -868,297 +835,104 @@ void MainWindow::setupConnections()
     
     // Connect resolution change to immediately update display and simulation
     connect(resolutionEdit, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &MainWindow::onResolutionChanged);
+    
+    // Connect to simulation engine signals when available
+    setupSimulationEngineConnections();
 }
 
 void MainWindow::onSelectDEM()
 {
-    QString fileName = QFileDialog::getOpenFileName(this, "Select DEM CSV File", "", "CSV Files (*.csv)");
-    if (!fileName.isEmpty())
-    {
-        demFileLabel->setText(fileName);
-        
-        // Analyze file to suggest proper resolution
-        QFile file(fileName);
-        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            // Try to determine if this is a high- or low-resolution DEM
-            QTextStream in(&file);
-            QString firstLine = in.readLine();
-            QStringList values = firstLine.split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts);
-            
-            // Check if the file contains no-data values (-999999)
-            bool containsNoDataValues = firstLine.contains("-999999");
-            
-            // If the line has many values or contains no-data markers, likely a low-res DEM
-            if (values.size() > 100 || containsNoDataValues) {
-                // Suggest a higher resolution value (e.g., 10m for coarser DEM)
-                double suggestedResolution = 10.0;
-                
-                // Ask user about suggested resolution
-                QMessageBox resolutionPrompt;
-                resolutionPrompt.setIcon(QMessageBox::Question);
-                resolutionPrompt.setWindowTitle("DEM Resolution");
-                resolutionPrompt.setText(QString("This appears to be a lower-resolution DEM file with larger coverage area."));
-                resolutionPrompt.setInformativeText(QString("Would you like to set the resolution to %1 meters?").arg(suggestedResolution));
-                resolutionPrompt.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-                resolutionPrompt.setDefaultButton(QMessageBox::Yes);
-                
-                if (resolutionPrompt.exec() == QMessageBox::Yes) {
-                    resolutionEdit->setValue(suggestedResolution);
-                }
-            }
-            
-            file.close();
-        }
-        
-        // Set the current resolution in the simulation engine
-        if (simEngine) {
-            simEngine->setCellResolution(resolutionEdit->value());
-        }
-        
-        // Try to load the DEM file
-        if (!simEngine->loadDEM(fileName))
-        {
-            QMessageBox::warning(this, "Error", "Failed to load DEM file. Check the file format.");
-            demFileLabel->setText("No file selected");
-        }
-        else
-        {
-            // Update the UI to show the DEM is loaded
-            resultDisplayLabel->setText("DEM loaded successfully.\nConfigure parameters and press Start to begin simulation.");
-            simDisplayLabel->setText("DEM loaded successfully.\nSelect 'Manual Selection' from Outlet Method dropdown and use 'Select Outlets' to choose outlet cells.");
-            
-            // Add resolution info to status
-            double resolution = resolutionEdit->value();
-            QString resInfo = QString("Resolution: %1 m").arg(resolution, 0, 'f', 2);
-            outputLabel->setText(resInfo + " - " + simDisplayLabel->text());
-            
-            // If in manual outlet selection mode, show the DEM preview
-            if (manualOutletSelectionMode && outletMethodCombo->currentIndex() == 1) {
-                showDEMPreview();
-            }
-        }
-    }
-}
+    QString fileName = QFileDialog::getOpenFileName(this,
+        tr("Open Digital Elevation Model"), "",
+        tr("GeoTIFF Files (*.tif *.tiff);;All Files (*)"));
 
-void MainWindow::onStartSimulation()
-{
+    if (fileName.isEmpty())
+        return;
+
+    qDebug() << "Loading DEM from:" << fileName;
+    
+    // Create the simulation engine if it doesn't exist
     if (!simEngine) {
-        outputLabel->setText("Please load a DEM file first.");
-        return;
-    }
-
-    // Reset UI and simulation
-    simulationRunning = true;
-    simulationPaused = false;
-    updateUIState();
-
-    // Configure simulation parameters from UI
-    simEngine->setCellResolution(resolutionEdit->value());
-    simEngine->setRainfall(rainfallEdit->value());
-    simEngine->setManningCoefficient(manningCoeffEdit->value());
-    simEngine->setInfiltrationRate(infiltrationEdit->value());
-    simEngine->setMinWaterDepth(minDepthEdit->value());
-    simEngine->setTotalTime(totalTimeEdit->value());
-    
-    // Debug output to check configurations
-    qDebug() << "--- Simulation Parameters ---";
-    qDebug() << "Cell Resolution:" << resolutionEdit->value() << "m";
-    qDebug() << "Rainfall Rate:" << rainfallEdit->value() << "m/s";
-    qDebug() << "Manning's Coefficient:" << manningCoeffEdit->value();
-    qDebug() << "Infiltration Rate:" << infiltrationEdit->value() << "m/s";
-    qDebug() << "Min Water Depth:" << minDepthEdit->value() << "m";
-    qDebug() << "Total Time:" << totalTimeEdit->value() << "s";
-    qDebug() << "Time-varying Rainfall:" << (simEngine->isTimeVaryingRainfall() ? "Enabled" : "Disabled");
-    
-    // Configure rainfall schedule if time-varying rainfall is enabled
-    if (simEngine->isTimeVaryingRainfall()) {
-        updateRainfallSchedule();
+        qDebug() << "Creating new SimulationEngine instance";
+        simEngine = new SimulationEngine(this);
+        
+        // Set up proper connections to simulation engine signals
+        setupSimulationEngineConnections();
     }
     
-    // Check outlet configuration
-    int outletMethod = outletMethodCombo->currentIndex();
-    qDebug() << "Outlet Method:" << (outletMethod == 0 ? "Automatic" : "Manual");
+    // Load the DEM file
+    bool success = simEngine->loadDEM(fileName);
+    qDebug() << "DEM loading result:" << (success ? "SUCCESS" : "FAILURE");
     
-    if (outletMethod == 0) {
-        // Automatic - by percentile
-        double percentile = outletPercentileEdit->value() / 100.0;
-        qDebug() << "Outlet Percentile:" << percentile;
-        simEngine->configureOutletsByPercentile(percentile);
-    } else {
-        // Manual - check if we have any outlets defined
-        qDebug() << "Manual Outlet Cells:" << manualOutletCells.size();
-        if (manualOutletCells.isEmpty()) {
-            qDebug() << "WARNING: No manual outlet cells selected!";
-            outputLabel->setText("Warning: No manual outlet cells selected. Using automatic method.");
-            double percentile = outletPercentileEdit->value() / 100.0;
-            simEngine->configureOutletsByPercentile(percentile);
-        } else {
-            simEngine->setManualOutletCells(manualOutletCells);
-        }
-    }
-    
-    // Debug - verify outlet cells were set correctly
-    if (outletMethod == 0) {
-        QVector<QPoint> autoCells = simEngine->getAutomaticOutletCells();
-        qDebug() << "Automatic Outlet Cells Count:" << autoCells.size();
-        for (int i = 0; i < qMin(5, autoCells.size()); i++) {
-            qDebug() << "  Outlet at:" << autoCells[i].x() << autoCells[i].y();
-        }
-        if (autoCells.size() > 5) qDebug() << "  ... and" << (autoCells.size() - 5) << "more";
-    } else {
-        qDebug() << "Manual Outlet Cells Count:" << manualOutletCells.size();
-        for (int i = 0; i < qMin(5, manualOutletCells.size()); i++) {
-            qDebug() << "  Outlet at:" << manualOutletCells[i].x() << manualOutletCells[i].y();
-        }
-        if (manualOutletCells.size() > 5) qDebug() << "  ... and" << (manualOutletCells.size() - 5) << "more";
-    }
-    
-    // Initialize the simulation
-    simEngine->initSimulation();
-    
-    // Start the simulation timer
-    simTimer->start(50); // 50 ms interval
-    uiUpdateTimer->start(200); // 200 ms for UI updates
-    
-    // Initialize progress bar
-    simulationProgress->setMaximum(simEngine->getTotalTime());
-    simulationProgress->setValue(0);
-    
-    // Update outputs
-    timeElapsedLabel->setText("Time Elapsed: 0.0 s");
-    drainageVolumeLabel->setText("Drainage Volume: 0.0 m³");
-    outputLabel->setText("Simulation started.");
-}
-
-void MainWindow::onPauseSimulation()
-{
-    if (simulationRunning) {
-        if (simulationPaused) {
-            // Resume simulation
-            simulationPaused = false;
-            simTimer->start(50);
-            pauseButton->setText("Pause");
-        } else {
-            // Pause simulation
-            simulationPaused = true;
-            simTimer->stop();
-            pauseButton->setText("Resume");
-        }
-    }
-}
-
-void MainWindow::onStopSimulation()
-{
-    simTimer->stop();
-    simulationRunning = false;
-    simulationPaused = false;
-    
-    // Show final results
-    double totalDrainage = simEngine->getTotalDrainage();
-    resultsOutputLabel->setText(QString("Simulation stopped at time: %1 seconds\nTotal Drainage Volume: %2 m^3")
-                        .arg(simEngine->getCurrentTime(), 0, 'f', 1)
-                        .arg(totalDrainage, 0, 'f', 6));
-    
-    // Update UI state
-    updateUIState();
-}
-
-void MainWindow::onSimulationStep()
-{
-    if (!simEngine)
-        return;
-    
-    // Execute a single simulation step
-    simEngine->stepSimulation();
-    
-    // Get current time and update progress
-    double currentTime = simEngine->getCurrentTime();
-    double totalTime = simEngine->getTotalTime();
-    double totalDrainage = simEngine->getTotalDrainage();
-    int progress = int((currentTime / totalTime) * 100.0);
-    
-    // Update the UI with more detailed drainage info
-    simulationProgress->setValue(progress);
-    timeElapsedLabel->setText(QString("Time: %1 s").arg(currentTime, 0, 'f', 1));
-    drainageVolumeLabel->setText(QString("Drainage Volume: %1 m³").arg(totalDrainage, 0, 'f', 6));
-    
-    // Log drainage to help with debugging
-    if (int(currentTime) % 10 == 0) { // Log every 10 seconds
-        qDebug() << "Time:" << currentTime << "s, Total Drainage:" << totalDrainage << "m³";
-    }
-    
-    // If using time-varying rainfall, update the UI with current rate
-    if (timeVaryingRainfallCheckbox->isChecked()) {
-        double currentRate = simEngine->getCurrentRainfallRate();
-        // Highlight the active row in the rainfall table
-        for (int row = 0; row < rainfallTableWidget->rowCount(); row++) {
-            QTableWidgetItem* timeItem = rainfallTableWidget->item(row, 0);
-            if (timeItem) {
-                double rowTime = timeItem->text().toDouble();
-                
-                // If this row is active or the next row is in the future
-                if (row == rainfallTableWidget->rowCount() - 1 || 
-                    (rowTime <= currentTime && rainfallTableWidget->item(row + 1, 0)->text().toDouble() > currentTime)) {
-                    // Highlight this row
-                    for (int col = 0; col < rainfallTableWidget->columnCount(); col++) {
-                        if (rainfallTableWidget->item(row, col)) {
-                            rainfallTableWidget->item(row, col)->setBackground(QColor(200, 255, 200)); // Light green
-                        }
-                    }
-                } else {
-                    // Remove highlight
-                    for (int col = 0; col < rainfallTableWidget->columnCount(); col++) {
-                        if (rainfallTableWidget->item(row, col)) {
-                            rainfallTableWidget->item(row, col)->setBackground(QColor(255, 255, 255)); // White
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    // Update the visualization
-    updateVisualization();
-    
-    // Update the outlet table with latest drainage data
-    updateOutletTable();
-    
-    // Check if simulation is done
-    if (currentTime >= totalTime)
+    if (success)
     {
-        simTimer->stop();
-        simulationRunning = false;
-        simulationPaused = false;
+        // Get DEM info
+        int width = simEngine->getGridWidth();
+        int height = simEngine->getGridHeight();
+        double res = simEngine->getCellResolution();
         
-        // Get the total drainage volume and display
-        resultsOutputLabel->setText(QString("Simulation Complete!\nTotal Drainage Volume: %1 m³\nTotal Simulation Time: %2 seconds")
-                            .arg(totalDrainage, 0, 'f', 6)
-                            .arg(totalTime));
+        qDebug() << "DEM loaded with dimensions:" << width << "x" << height << "and resolution:" << res << "m";
         
-        // Enable save results button
-        saveResultsButton->setEnabled(true);
+        // Generate preview image
+        QImage demPreview = simEngine->getDEMPreviewImage();
         
-        QMessageBox::information(this, "Simulation Complete",
-                               QString("Simulation complete!\nTotal drainage volume: %1 m³")
-                               .arg(totalDrainage, 0, 'f', 6));
+        if (!demPreview.isNull()) {
+            qDebug() << "DEM preview image generated successfully, dimensions:" << demPreview.width() << "x" << demPreview.height();
+            // Save the DEM preview image for later use
+            currentDEMImage = demPreview;
+            
+            // Update the display
+            updateDEMDisplay();
+            
+            // Update the resolution editor with the actual value from the DEM
+            resolutionEdit->setValue(res);
+            
+            // Update DEM filename in the label
+            demFileLabel->setText(QFileInfo(fileName).fileName());
+            
+            // Update UI state now that we have a DEM loaded
+            updateUIState();
+            
+            // Update the start button state
+            startButton->setEnabled(true);
+            
+            // Show a success message
+            QMessageBox::information(this, "DEM Loaded Successfully", 
+                QString("DEM file loaded successfully.\nDimensions: %1 x %2\nResolution: %3 m\n\nYou can now configure parameters and start the simulation.").arg(width).arg(height).arg(res, 0, 'f', 3));
+        }
+    } else {
+        QMessageBox::critical(this, "Error", 
+            QString("Failed to load DEM file: %1\nPlease check the file format and try again.").arg(fileName));
     }
 }
 
 void MainWindow::updateUIState()
 {
-    // Update button states based on simulation state
-    startButton->setEnabled(!simulationRunning || simulationPaused);
-    pauseButton->setEnabled(simulationRunning);
+    bool hasDEM = !currentDEMImage.isNull();
+    
+    // Update button states based on simulation state and DEM availability
+    selectDEMButton->setEnabled(!simulationRunning);
+    startButton->setEnabled(hasDEM && (!simulationRunning || simulationPaused));
+    pauseButton->setEnabled(simulationRunning && !simulationPaused);
     stopButton->setEnabled(simulationRunning);
+    saveResultsButton->setEnabled(hasDEM && simEngine && simEngine->getTotalDrainage() > 0);
     
     // Disable parameter editing during simulation
-    bool canEditParams = !simulationRunning;
-    rainfallEdit->setEnabled(canEditParams);
+    bool canEditParams = !simulationRunning && hasDEM;
+    rainfallEdit->setEnabled(canEditParams && !timeVaryingRainfallCheckbox->isChecked());
+    timeVaryingRainfallCheckbox->setEnabled(canEditParams);
     manningCoeffEdit->setEnabled(canEditParams);
     infiltrationEdit->setEnabled(canEditParams);
     totalTimeEdit->setEnabled(canEditParams);
     minDepthEdit->setEnabled(canEditParams);
     resolutionEdit->setEnabled(canEditParams);
+    
+    // Update outlet controls
+    bool isManualMethod = (outletMethodCombo->currentIndex() == 1);
+    outletMethodCombo->setEnabled(canEditParams);
+    outletPercentileEdit->setEnabled(canEditParams && !isManualMethod);
+    manualOutletCheckbox->setEnabled(canEditParams && isManualMethod);
+    selectOutletButton->setEnabled(canEditParams && isManualMethod && manualOutletCheckbox->isChecked());
     outletMethodCombo->setEnabled(canEditParams);
     outletPercentileEdit->setEnabled(canEditParams && outletMethodCombo->currentIndex() == 0);
     manualOutletCheckbox->setEnabled(canEditParams && outletMethodCombo->currentIndex() == 1);
@@ -1229,27 +1003,64 @@ void MainWindow::onManualOutletCellsToggled(bool checked)
 
 void MainWindow::onSelectOutlet()
 {
-    if (demFileLabel->text() == "No file selected") {
-        QMessageBox::warning(this, "Error", "Please load a DEM file first.");
+    // Check if we have a DEM loaded
+    if (currentDEMImage.isNull()) {
+        QMessageBox::warning(this, "Error", "No DEM loaded. Please load a DEM file first.");
         return;
     }
     
-    // No need to show a message box here - we already show one in onManualOutletCellsToggled
-    // This will prevent duplicate message boxes
-    
-    // Enable manual outlet selection mode
+    // Set outlet selection mode
     manualOutletSelectionMode = true;
     
-    // Switch to Outlet Selection tab (index 2 based on our insertTab order)
-    mainTabWidget->setCurrentIndex(2);
+    // Make sure the correct outlet method is selected
+    if (outletMethodCombo->currentIndex() != 1) {
+        outletMethodCombo->setCurrentIndex(1); // Switch to manual selection mode
+    }
     
-    // Show a special DEM preview for outlet selection
+    // Ensure manual outlet checkbox is checked
+    manualOutletCheckbox->setChecked(true);
+    
+    // Save the current tab index before switching
+    previousTabIndex = mainTabWidget->currentIndex();
+    
+    // Switch to the outlet selection tab with animation
+    int outletTabIndex = mainTabWidget->indexOf(demPreviewTab);
+    if (outletTabIndex >= 0) {
+        mainTabWidget->setCurrentIndex(outletTabIndex);
+        
+        // Flash the tab text briefly to indicate the switch
+        QFont font = mainTabWidget->tabBar()->font();
+        font.setBold(true);
+        mainTabWidget->tabBar()->setTabTextColor(outletTabIndex, Qt::blue);
+        mainTabWidget->tabBar()->setFont(font);
+        
+        // Reset the tab appearance after a short delay
+        QTimer::singleShot(1000, this, [this, outletTabIndex]() {
+            QFont normalFont = mainTabWidget->tabBar()->font();
+            normalFont.setBold(false);
+            mainTabWidget->tabBar()->setFont(normalFont);
+            mainTabWidget->tabBar()->setTabTextColor(outletTabIndex, palette().text().color());
+        });
+    }
+    
+    // Load the DEM preview with current outlet selections
     showDEMPreview();
+    
+    // Show instructions for outlet selection
+    outputLabel->setText("Click on the DEM to select outlet cells. Click on a selected cell again to deselect it. Drag to pan, scroll to zoom.");
 }
 
 void MainWindow::showDEMPreview()
 {
-    if (!simEngine) return;
+    if (!simEngine) {
+        qDebug() << "Cannot show DEM preview - simEngine is null";
+        return;
+    }
+    
+    if (currentDEMImage.isNull()) {
+        qDebug() << "Cannot show DEM preview - currentDEMImage is null";
+        return;
+    }
     
     // Store current zoom and pan values to restore after updating
     float currentZoom = zoomLevel;
@@ -1262,10 +1073,11 @@ void MainWindow::showDEMPreview()
     }
     
     // Update the simulation engine with current outlet cells
-    simEngine->setManualOutletCells(manualOutletCells);
+    if (manualOutletSelectionMode) {
+        simEngine->setManualOutletCells(manualOutletCells);
+    }
     
     // Always get a fresh DEM preview image to ensure outlet markings are up-to-date
-    // This is important since we want to see current outlet cells highlighted
     QImage img = simEngine->getDEMPreviewImage();
     
     if (!img.isNull()) {
@@ -1283,11 +1095,15 @@ void MainWindow::showDEMPreview()
         updateOutletTable();
         
         // Update status message
-        if (manualOutletCells.isEmpty()) {
-            outputLabel->setText("No outlet cells selected. Click anywhere on the DEM to select outlets. Drag to pan, scroll to zoom.");
-        } else {
-            outputLabel->setText(QString("%1 outlet cell(s) selected. Click to add/remove outlets. Drag to pan, scroll to zoom.")
+        if (manualOutletSelectionMode) {
+            if (manualOutletCells.isEmpty()) {
+                outputLabel->setText("Manual outlet selection mode: No outlet cells selected. Click anywhere on the DEM to select outlets.");
+            } else {
+                outputLabel->setText(QString("Manual outlet selection mode: %1 outlet cell(s) selected. Click to add/remove outlets.")
                               .arg(manualOutletCells.size()));
+            }
+        } else {
+            outputLabel->setText("Using automatic outlet selection. Switch to manual mode to select outlets.");
         }
     } else {
         qDebug() << "getDEMPreviewImage returned a null image";
@@ -1652,7 +1468,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     }
 }
 
-void MainWindow::updateDisplay(QLabel* displayLabel, const QImage& image, QLabel* statusLabel, const QString& statusPrefix, const QVector<QPoint>* selectedPoints)
+void MainWindow::updateDisplay(QLabel* displayLabel, const QImage& image, QLabel* statusLabel, const QString& statusPrefix, QPainter* customPainter)
 {
     if (image.isNull())
         return;
@@ -1668,55 +1484,56 @@ void MainWindow::updateDisplay(QLabel* displayLabel, const QImage& image, QLabel
                          scrollArea->verticalScrollBar()->value());
         
         // First, ensure scrollbars are always visible to prevent flickering
-        // when they appear/disappear
         scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
         scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
     }
     
-    // Get viewport size (visible area)
-    QSize viewportSize = scrollArea ? scrollArea->viewport()->size() : displayLabel->size();
-    QSize imageSize = image.size();
+    // Create a pixmap to display the image with zoom and pan
+    QSize displaySize = image.size();
+    if (zoomLevel != 1.0f) {
+        displaySize = QSize(int(image.width() * zoomLevel), int(image.height() * zoomLevel));
+    }
     
-    // Apply zoom to the image
-    QSize scaledSize = imageSize * zoomLevel;
-    
-    // Set a reasonable maximum size limit
-    scaledSize = scaledSize.boundedTo(QSize(10000, 10000));
-    
-    // Create a display pixmap that's large enough to contain the scaled image
-    // Add a large fixed buffer (100px) to avoid frequent resizing
-    QSize displaySize = QSize(
-        qMax(viewportSize.width(), scaledSize.width() + 100),
-        qMax(viewportSize.height(), scaledSize.height() + 100)
-    );
-    
-    // Create the display pixmap
-    QPixmap displayPixmap(displaySize);
-    displayPixmap.fill(Qt::lightGray);
-    
-    // Calculate the centered position for the image
-    int x = (displaySize.width() - scaledSize.width()) / 2 + panOffset.x();
-    int y = (displaySize.height() - scaledSize.height()) / 2 + panOffset.y();
-    
-    // Scale the image with high quality
+    // Scale the image according to zoom level
     QPixmap scaledPixmap = QPixmap::fromImage(image).scaled(
-        scaledSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        displaySize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     
-    // Draw the zoomed/panned image on the display pixmap
+    // Create a display pixmap large enough to hold the scaled image plus pan offset
+    QPixmap displayPixmap(scaledPixmap.size());
+    displayPixmap.fill(Qt::lightGray); // Fill with background color
+    
     QPainter painter(&displayPixmap);
-    painter.drawPixmap(x, y, scaledPixmap);
     
-    // Add zoom level indicator and navigation help
-    QFont font = painter.font();
-    font.setPointSize(10);
-    painter.setFont(font);
-    painter.setPen(Qt::black);
+    // Apply pan offset to the drawing
+    QPoint drawPos = QPoint(0, 0) + panOffset;
+    painter.drawPixmap(drawPos, scaledPixmap);
     
-    QString zoomText = QString("Zoom: %1%").arg(int(zoomLevel * 100));
-    painter.drawText(10, 20, zoomText);
+    // Allow custom painting on top of the image
+    if (customPainter) {
+        customPainter->begin(&displayPixmap);
+        
+        // Custom painter can draw additional elements here
+        
+        customPainter->end();
+    }
     
-    QString helpText = "Drag to pan | Scroll to zoom | Double-click to reset view";
-    painter.drawText(10, displaySize.height() - 10, helpText);
+    // If this is the DEM preview, draw manual outlet markers
+    if (displayLabel == simDisplayLabel && !manualOutletCells.isEmpty()) {
+        // Draw selected cells with a marker (red circle)
+        painter.setPen(QPen(Qt::red, 2));
+        painter.setBrush(QBrush(QColor(255, 0, 0, 100)));  // Semi-transparent red
+        
+        for (const QPoint& cell : manualOutletCells) {
+            // Convert cell coordinates to pixel coordinates based on zoom level
+            int x = int(cell.y() * zoomLevel) + panOffset.x();  // Note: y coordinate is horizontal in the grid
+            int y = int(cell.x() * zoomLevel) + panOffset.y();  // Note: x coordinate is vertical in the grid
+            
+            // Only draw if the point is visible in the viewport
+            if (x >= 0 && x < displayPixmap.width() && y >= 0 && y < displayPixmap.height()) {
+                painter.drawEllipse(QPoint(x, y), 6, 6);  // 12px diameter circle
+            }
+        }
+    }
     
     painter.end();
     
@@ -1779,8 +1596,8 @@ void MainWindow::updateDisplay(QLabel* displayLabel, const QImage& image, QLabel
                             .arg(panOffset.y());
     
     // Add outlet count for DEM preview tab
-    if (displayLabel == simDisplayLabel && selectedPoints && !selectedPoints->isEmpty()) {
-        statusText += QString(" | %1 outlet(s) selected").arg(selectedPoints->size());
+    if (displayLabel == simDisplayLabel && !manualOutletCells.isEmpty()) {
+        statusText += QString(" | %1 outlet(s) selected").arg(manualOutletCells.size());
     }
     
     if (statusLabel) {
@@ -1844,18 +1661,43 @@ void MainWindow::resetDisplayView(QLabel* displayLabel, QLabel* statusLabel, con
 
 void MainWindow::updateDEMDisplay()
 {
-    updateDisplay(simDisplayLabel, currentDEMImage, outputLabel, "DEM visualization", &manualOutletCells);
+    updateDisplay(simDisplayLabel, currentDEMImage, outputLabel, "DEM visualization", nullptr);
 }
 
 void MainWindow::updateVisualization()
 {
-    if (!simEngine)
+    if (!simEngine) {
+        qDebug() << "ERROR: Cannot update visualization - simEngine is null";
         return;
+    }
     
-    currentSimulationImage = simEngine->getWaterDepthImage();
-    if (currentSimulationImage.isNull())
-        return;
+    // If we already have a valid current simulation image, use it
+    if (currentSimulationImage.isNull()) {
+        qDebug() << "Getting water depth image from simulation engine";
+        // Get the water depth image from the simulation engine
+        QImage img = simEngine->getWaterDepthImage();
+        
+        if (img.isNull()) {
+            qDebug() << "ERROR: Water depth image is NULL in updateVisualization()";
+            
+            // If we still don't have an image, try to get the DEM preview image as a fallback
+            img = simEngine->getDEMPreviewImage();
+            if (!img.isNull()) {
+                qDebug() << "Using DEM preview image as fallback, size:" << img.size();
+                currentSimulationImage = img;
+            } else {
+                qDebug() << "Failed to get any valid image for visualization";
+                resultsOutputLabel->setText("Error: Could not generate any visualization image");
+                return;
+            }
+        } else {
+            qDebug() << "Got valid water depth image, size:" << img.size();
+            // Store the image for future reference
+            currentSimulationImage = img;
+        }
+    }
     
+    // Display information
     double drainageVol = simEngine->getTotalDrainage();
     double elapsedTime = simEngine->getCurrentTime();
     double totalTime = simEngine->getTotalTime();
@@ -1865,7 +1707,10 @@ void MainWindow::updateVisualization()
                          .arg(totalTime, 0, 'f', 1)
                          .arg(drainageVol, 0, 'f', 3);
     
-    updateDisplay(resultDisplayLabel, currentSimulationImage, resultsOutputLabel, "Water visualization", nullptr);
+    qDebug() << "Updating display with image size:" << currentSimulationImage.size();
+    
+    // Update the display with the image
+    updateDisplay(resultDisplayLabel, currentSimulationImage, resultsOutputLabel, statusPrefix, nullptr);
     
     // Update the outlet table with current drainage data
     updateOutletTable();
@@ -2020,6 +1865,22 @@ void MainWindow::onTimeVaryingRainfallToggled(bool checked)
         simEngine->setTimeVaryingRainfall(checked);
         updateRainfallSchedule();
     }
+    
+    // Switch to the rainfall configuration tab when enabled
+    if (checked) {
+        // Find the index of the rainfall configuration tab
+        int rainfallTabIndex = -1;
+        for (int i = 0; i < mainTabWidget->count(); i++) {
+            if (mainTabWidget->tabText(i).contains("Rainfall", Qt::CaseInsensitive)) {
+                rainfallTabIndex = i;
+                break;
+            }
+        }
+        
+        if (rainfallTabIndex >= 0) {
+            mainTabWidget->setCurrentIndex(rainfallTabIndex);
+        }
+    }
 }
 
 void MainWindow::onAddRainfallRow()
@@ -2152,6 +2013,11 @@ void MainWindow::updateRainfallSchedule()
 
 void MainWindow::onResolutionChanged(double newResolution)
 {
+    // This function might need adjustment depending on whether resolution
+    // is primarily driven by the UI or the loaded TIF file.
+    // If TIF dictates resolution, maybe this spinbox should be read-only
+    // or only used as an override/fallback.
+    
     // Update the simulation engine with the new resolution
     if (simEngine) {
         simEngine->setCellResolution(newResolution);
@@ -2159,12 +2025,331 @@ void MainWindow::onResolutionChanged(double newResolution)
         // If we have a loaded DEM, refresh the preview
         if (demFileLabel->text() != "No file selected" && !currentDEMImage.isNull()) {
             // Refresh the DEM preview with new resolution
-            currentDEMImage = simEngine->getDEMPreviewImage();
-            updateDEMDisplay();
+            // Re-getting the image implicitly uses the new resolution set in simEngine
+            showDEMPreview(); // This re-calls getDEMPreviewImage which uses the new resolution
             
             // Add resolution info to status
-            QString message = QString("Resolution changed to %1 m. Display adjusted accordingly.").arg(newResolution, 0, 'f', 2);
+            QString message = QString("Resolution manually set to %1 m. Display adjusted.").arg(newResolution, 0, 'f', 3);
             outputLabel->setText(message);
+        }
+    }
+}
+
+// Connect to simulation engine signals
+void MainWindow::setupSimulationEngineConnections()
+{
+    if (!simEngine) {
+        return;
+    }
+    
+    // Disconnect any existing connections first to avoid duplicates
+    disconnect(simEngine, &SimulationEngine::simulationTimeUpdated, this, nullptr);
+    disconnect(simEngine, &SimulationEngine::simulationStepCompleted, this, nullptr);
+    
+    // Connect time update signal
+    connect(simEngine, &SimulationEngine::simulationTimeUpdated, this, 
+            [this](double currentTime, double totalTime) {
+                timeElapsedLabel->setText(QString("Time: %1 / %2 s").arg(currentTime, 0, 'f', 1).arg(totalTime, 0, 'f', 1));
+                int progress = int((currentTime / totalTime) * 100.0);
+                simulationProgress->setValue(progress);
+            });
+            
+    // Connect step completed signal
+    connect(simEngine, &SimulationEngine::simulationStepCompleted, this,
+            [this](const QImage& image) {
+                if (!image.isNull()) {
+                    updateDisplay(resultDisplayLabel, image, resultsOutputLabel, "Water visualization", nullptr);
+                }
+            });
+}
+
+void MainWindow::onSimulationStep()
+{
+    if (!simEngine) {
+        qDebug() << "ERROR: simEngine is null in onSimulationStep!";
+        return;
+    }
+
+    if (!simulationRunning || simulationPaused) {
+        return; // Don't step if simulation is not running or is paused
+    }
+
+    qDebug() << "==== SIMULATION STEP ====";
+    
+    // Perform a simulation step
+    simEngine->stepSimulation();
+    
+    // Get the current state after simulation
+    double currentTime = simEngine->getCurrentTime();
+    double totalTime = simEngine->getTotalTime();
+    double totalDrainage = simEngine->getTotalDrainage();
+    
+    qDebug() << "Current time:" << currentTime << "/ Total time:" << totalTime;
+    qDebug() << "Total drainage:" << totalDrainage;
+
+    // Get the current water depth image
+    qDebug() << "Getting water depth image...";
+    QImage waterDepthImage = simEngine->getWaterDepthImage();
+    
+    if (waterDepthImage.isNull()) {
+        qDebug() << "ERROR: Water depth image is NULL!";
+        return;
+    }
+    
+    qDebug() << "Water depth image dimensions:" << waterDepthImage.width() << "x" << waterDepthImage.height();
+    
+    // Update the simulation image
+    currentSimulationImage = waterDepthImage;
+    
+    // Update the display with the current image
+    updateVisualization();
+    
+    // Display simulation stats
+    QString timeStr = QString("Time: %1 / %2 seconds").arg(currentTime, 0, 'f', 1).arg(totalTime, 0, 'f', 1);
+    QString drainageStr = QString("Total drainage: %1 m³").arg(totalDrainage, 0, 'f', 3);
+    
+    // Update the status bar
+    statusBar()->showMessage(timeStr + " | " + drainageStr);
+    
+    // Update UI labels
+    timeElapsedLabel->setText(QString("Time: %1 / %2 s").arg(currentTime, 0, 'f', 1).arg(totalTime, 0, 'f', 1));
+    drainageVolumeLabel->setText(QString("Drainage: %1 m³").arg(totalDrainage, 0, 'f', 3));
+    
+    // Update progress bar (as percentage)
+    int progress = static_cast<int>((currentTime / totalTime) * 100.0);
+    simulationProgress->setValue(progress);
+    
+    // Check if the simulation is complete
+    if (currentTime >= totalTime) {
+        qDebug() << "Simulation complete!";
+        
+        // Stop the simulation
+        simTimer->stop();
+        simulationRunning = false;
+        
+        // Show completion message
+        QString completeMessage = QString("Simulation complete!\nTotal time: %1 seconds\nTotal drainage: %2 m³")
+                                .arg(totalTime, 0, 'f', 1)
+                                .arg(totalDrainage, 0, 'f', 3);
+        
+        // Show completion message in status bar
+        statusBar()->showMessage("Simulation complete. " + drainageStr);
+        
+        // Update the display text to indicate completion
+        resultsOutputLabel->setText("Simulation complete. Final water depth visualization shown above.");
+        
+        // Show a message box with simulation results
+        QMessageBox::information(this, "Simulation Complete", completeMessage);
+        
+        // Reset the start button text and state
+        startButton->setText("Start");
+        updateUIState();
+    }
+}
+
+void MainWindow::onStartSimulation()
+{
+    // Make sure simulation engine exists
+    if (!simEngine) {
+        QMessageBox::warning(this, "Error", "Simulation engine not initialized. Please load a DEM file first.");
+        return;
+    }
+    
+    // Check if we have a DEM loaded
+    if (currentDEMImage.isNull()) {
+        QMessageBox::warning(this, "Error", "No Digital Elevation Model loaded. Please load a DEM file first.");
+        return;
+    }
+    
+    // Set simulation state flags
+    simulationRunning = true;
+    simulationPaused = false;
+    
+    // Initialize simulation with current parameters
+    // Set the simulation parameters from UI
+    simEngine->setManningCoefficient(manningCoeffEdit->value());
+    simEngine->setInfiltrationRate(infiltrationEdit->value());
+    simEngine->setMinWaterDepth(minDepthEdit->value());
+    simEngine->setTotalTime(totalTimeEdit->value());
+    
+    // Handle rainfall configuration - either constant or time-varying
+    if (timeVaryingRainfallCheckbox->isChecked()) {
+        simEngine->setTimeVaryingRainfall(true);
+        // Make sure the rainfall schedule is updated with the latest values
+        updateRainfallSchedule();
+    } else {
+        simEngine->setTimeVaryingRainfall(false);
+        simEngine->setRainfall(rainfallEdit->value());
+    }
+    
+    // Handle outlet configuration
+    if (outletMethodCombo->currentIndex() == 0) {
+        // Automatic outlets based on percentile
+        double percentile = outletPercentileEdit->value() / 100.0;
+        simEngine->configureOutletsByPercentile(percentile);
+    } else {
+        // Manual outlets
+        simEngine->setManualOutletCells(manualOutletCells);
+    }
+    
+    // Initialize the simulation
+    bool initSuccess = simEngine->initSimulation();
+    
+    if (!initSuccess) {
+        QMessageBox::warning(this, "Simulation Error", "Failed to initialize the simulation. Please check your parameters.");
+        simulationRunning = false;
+        updateUIState();
+        return;
+    }
+    
+    // Update display options
+    simEngine->setShowGrid(showGridCheckbox->isChecked());
+    simEngine->setShowRulers(showRulersCheckbox->isChecked());
+    simEngine->setGridInterval(gridIntervalSpinBox->value());
+    
+    // Save the current tab index before switching
+    previousTabIndex = mainTabWidget->currentIndex();
+    
+    // Switch to the simulation results tab with animation
+    int resultsTabIndex = mainTabWidget->indexOf(visualizationTab);
+    if (resultsTabIndex >= 0) {
+        mainTabWidget->setCurrentIndex(resultsTabIndex);
+        
+        // Flash the tab text briefly to indicate the switch
+        QFont font = mainTabWidget->tabBar()->font();
+        font.setBold(true);
+        mainTabWidget->tabBar()->setTabTextColor(resultsTabIndex, Qt::blue);
+        mainTabWidget->tabBar()->setFont(font);
+        
+        // Reset the tab appearance after a short delay
+        QTimer::singleShot(1000, this, [this, resultsTabIndex]() {
+            QFont normalFont = mainTabWidget->tabBar()->font();
+            normalFont.setBold(false);
+            mainTabWidget->tabBar()->setFont(normalFont);
+            mainTabWidget->tabBar()->setTabTextColor(resultsTabIndex, palette().text().color());
+        });
+    }
+    
+    // Clear any existing simulation image
+    currentSimulationImage = QImage();
+    
+    // Get initial water depth image
+    QImage initialImage = simEngine->getWaterDepthImage();
+    if (!initialImage.isNull()) {
+        qDebug() << "Initial water depth image is valid, dimensions:" << initialImage.width() << "x" << initialImage.height();
+        currentSimulationImage = initialImage;
+        
+        // Reset zoom and pan settings for visualization
+        zoomLevel = 1.0f;
+        panOffset = QPoint(0, 0);
+        
+        // Update the visualization display
+        updateVisualization();
+    } else {
+        qDebug() << "ERROR: Initial water depth image is NULL!";
+        QMessageBox::warning(this, "Visualization Error", "Failed to generate initial water depth visualization image.");
+        simulationRunning = false;
+        return;
+    }
+    
+    // Update UI state after initialization
+    updateUIState();
+    
+    // Start the simulation timers
+    simTimer->start(50); // 50 ms interval
+    uiUpdateTimer->start(200); // 200 ms for UI updates
+    
+    // Update progress bar range
+    simulationProgress->setMaximum(100);
+    simulationProgress->setValue(0);
+    
+    // Update labels
+    timeElapsedLabel->setText(QString("Time: %1 / %2 s").arg(0.0, 0, 'f', 1).arg(simEngine->getTotalTime(), 0, 'f', 1));
+    drainageVolumeLabel->setText(QString("Drainage: %1 m³").arg(0.0, 0, 'f', 3));
+    
+    // Update outputs
+    outputLabel->setText("Simulation started and running.");
+    resultsOutputLabel->setText("Simulation running - water depth visualization shown above");
+}
+
+void MainWindow::onPauseSimulation()
+{
+    if (!simulationRunning || simulationPaused)
+        return;
+
+    simulationPaused = true;
+    simTimer->stop();
+    updateUIState();
+    
+    // Update UI to show paused state
+    pauseButton->setEnabled(false);
+    startButton->setEnabled(true);
+    resultsOutputLabel->setText("Simulation paused");
+}
+
+void MainWindow::onStopSimulation()
+{
+    if (!simulationRunning && !simulationPaused)
+        return;
+
+    simulationRunning = false;
+    simulationPaused = false;
+    simTimer->stop();
+    
+    // Reset simulation state
+    bool resetSuccess = simEngine->initSimulation();
+    if (!resetSuccess) {
+        qDebug() << "Warning: Failed to fully reset simulation state";
+    }
+    
+    currentSimulationImage = QImage();
+    
+    // Update UI
+    updateUIState();
+    resultsOutputLabel->setText("Simulation stopped");
+    simulationProgress->setValue(0);
+    timeElapsedLabel->setText("Time: 0 s");
+    drainageVolumeLabel->setText("Drainage: 0 m³");
+    
+    // Reset the visualization
+    resetVisualizationView();
+    
+    // Give the option to return to previous tab
+    QTimer::singleShot(500, this, &MainWindow::returnToPreviousTab);
+}
+
+void MainWindow::returnToPreviousTab()
+{
+    // Only return if we have a valid previous tab
+    if (previousTabIndex >= 0 && previousTabIndex < mainTabWidget->count() && 
+        previousTabIndex != mainTabWidget->currentIndex()) {
+        
+        // Ask the user if they want to return to the previous tab
+        QMessageBox msgBox;
+        msgBox.setWindowTitle("Return to Previous Tab");
+        msgBox.setText("Do you want to return to the previous tab?");
+        msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+        msgBox.setDefaultButton(QMessageBox::Yes);
+        
+        if (msgBox.exec() == QMessageBox::Yes) {
+            // Flash the tab briefly before switching
+            QFont font = mainTabWidget->tabBar()->font();
+            font.setBold(true);
+            mainTabWidget->tabBar()->setTabTextColor(previousTabIndex, Qt::blue);
+            mainTabWidget->tabBar()->setFont(font);
+            
+            // Switch to previous tab
+            mainTabWidget->setCurrentIndex(previousTabIndex);
+            
+            // Reset the tab appearance after a short delay
+            QTimer::singleShot(1000, this, [this]() {
+                for (int i = 0; i < mainTabWidget->count(); i++) {
+                    QFont normalFont = mainTabWidget->tabBar()->font();
+                    normalFont.setBold(false);
+                    mainTabWidget->tabBar()->setFont(normalFont);
+                    mainTabWidget->tabBar()->setTabTextColor(i, palette().text().color());
+                }
+            });
         }
     }
 }
