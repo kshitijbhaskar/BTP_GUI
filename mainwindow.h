@@ -20,7 +20,10 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QTableWidget>
+#include <QVTKOpenGLNativeWidget.h>
 #include "SimulationEngine.h"
+#include "VTKTerrainVisualizer.h"
+#include "VTKWaterVisualizer.h"
 
 // Forward declaration of ClickableLabel
 class ClickableLabel;
@@ -30,7 +33,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    MainWindow(QWidget *parent = nullptr);
+    MainWindow(bool enableVTKVisualization = true, QWidget *parent = nullptr);
     ~MainWindow();
 
 protected:
@@ -64,6 +67,17 @@ private slots:
     void updateRainfallSchedule();
     // Resolution change handling
     void onResolutionChanged(double newResolution);
+    
+    // New VTK-specific slots
+    void onToggle3DView(bool enabled);
+    void onWaterOpacityChanged(int value);
+    void onVerticalExaggerationChanged(double value);
+    void onShowFlowVectorsToggled(bool checked);
+    void onTerrainClicked(QPoint position);
+    void onWaterSurfaceSmoothingToggled(bool checked);
+    void onWaterDepthUpdated(double maxDepth);
+    void onSaveVTKView();
+    void onSyncCameras(bool checked);
 
 private:
     // Initialize UI Components
@@ -75,6 +89,13 @@ private:
     void createRainfallPanel(QWidget* parent = nullptr);
     void setupConnections();
     void setupSimulationEngineConnections();
+    
+    // New VTK visualization panels - only created if VTK is available
+    void createVTKTerrainPanel();
+    void createVTKWaterPanel();
+    
+    // Flag to indicate if VTK visualization is available/enabled
+    bool vtkVisualizationEnabled;
     
     // Helper methods for manual outlet selection
     void showDEMPreview();
@@ -126,6 +147,16 @@ private:
     QCheckBox *showRulersCheckbox;       // Toggle rulers display
     QSpinBox *gridIntervalSpinBox;       // Grid line interval setting
     
+    // New VTK visualization options
+    QCheckBox *view3DCheckbox;           // Toggle 3D view
+    QSlider *waterOpacitySlider;         // Control water transparency
+    QDoubleSpinBox *verticalExaggerationSpinBox; // Control 3D height scaling
+    QCheckBox *showFlowVectorsCheckbox;  // Toggle flow vector display
+    QCheckBox *waterSmoothingCheckbox;   // Toggle water surface smoothing
+    QLabel *maxWaterDepthLabel;          // Display max water depth
+    QPushButton *saveVTKViewButton;      // Save VTK view as image
+    QCheckBox *syncCamerasCheckbox;      // Sync terrain and water cameras
+    
     // Pan and zoom variables
     float zoomLevel;                     // Current zoom level
     QPoint panOffset;                    // Current pan offset
@@ -141,9 +172,13 @@ private:
     QLabel *timeElapsedLabel;
     QLabel *drainageVolumeLabel;
     
-    // Visualization Elements
+    // Visualization Elements - Legacy 2D 
     ClickableLabel *simDisplayLabel;     // Area where DEM and outlet selection is shown (changed from QLabel* to ClickableLabel*)
     ClickableLabel *resultDisplayLabel;  // Area where simulation results are shown (changed from QLabel to ClickableLabel)
+    
+    // VTK Visualization Elements - 3D
+    VTKTerrainVisualizer *vtkTerrainVisualizer;
+    VTKWaterVisualizer *vtkWaterVisualizer;
     
     // Output Controls
     QPushButton *saveResultsButton;
@@ -155,6 +190,8 @@ private:
     QWidget *inputTab;
     QWidget *visualizationTab;
     QWidget *demPreviewTab;
+    QWidget *vtkTerrainTab;
+    QWidget *vtkWaterTab;
     int previousTabIndex; // To store the previous tab index
     
     // Simulation engine and control

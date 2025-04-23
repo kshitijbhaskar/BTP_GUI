@@ -741,311 +741,389 @@ QVector<QPair<double, double>> SimulationEngine::getDrainageTimeSeries() const
 
 QImage SimulationEngine::getWaterDepthImage() const
 {
-    if (nx <= 0 || ny <= 0)
+    // Check if grid is valid
+    if (nx <= 0 || ny <= 0 || h.empty()) {
+        qDebug() << "Invalid grid dimensions or water depth data for visualization";
         return QImage();
-
-    // Create an image with dimensions matching the DEM grid
-    // Note: Correctly match image dimensions to DEM dimensions (nx = rows, ny = columns)
-    QImage img(ny, nx, QImage::Format_RGB32);
-    img.fill(Qt::white);
-
-    // Find the max water depth for scaling
-    double maxDepth = 0.0;
-    for (int i = 0; i < nx; i++)
-    {
-        for (int j = 0; j < ny; j++)
-        {
-            // Skip no-data cells
-            if (dem[i][j] > -999998.0) {
-                maxDepth = std::max(maxDepth, h[i][j]);
-            }
-        }
-    }
-    
-    // Ensure max depth is positive for scaling
-    if (maxDepth <= 0.0)
-        maxDepth = 1.0;
-
-    // Create a color gradient from white to blue
-    for (int i = 0; i < nx; i++)
-    {
-        for (int j = 0; j < ny; j++)
-        {
-            if (dem[i][j] <= -999998.0) {
-                // No-data cells are light gray
-                img.setPixel(j, i, qRgb(200, 200, 200));
-                continue;
-            }
-            
-            double depth = h[i][j];
-            // Normalize depth to 0-1 range
-            double normalizedDepth = depth / maxDepth;
-            
-            // Create a color gradient: white (no water) to blue (deep water)
-            int blue = 255;
-            int red = int(255 * (1.0 - normalizedDepth));
-            int green = int(255 * (1.0 - normalizedDepth));
-            
-            // Flip the image vertically to correctly represent the DEM where row 0 is the top
-            // and j=0 is the left, j=ny-1 is the right
-            img.setPixel(j, i, qRgb(red, green, blue));
-        }
     }
 
-    // Draw gridlines to help identify cell positions if enabled
-    if (showGrid) {
-        QPainter painter(&img);
+    try {
+        // Find maximum water depth for scaling
+        double maxDepth = 0.0;
+        const double NO_DATA_VALUE = -999999.0;
         
-        // Use lighter, more subtle grid lines
-        painter.setPen(QPen(QColor(0, 0, 0, 40), 0.5)); // Very light black, mostly transparent, thin
-        
-        // Adjust grid interval based on resolution
-        int interval = gridInterval;
-        if (resolution > 5.0) {
-            interval = std::max(1, gridInterval / 2);
-        }
-        
-        // Draw horizontal gridlines
-        for (int i = 0; i <= nx; i += interval) {
-            painter.drawLine(0, i, ny, i);
-        }
-        
-        // Draw vertical gridlines
-        for (int j = 0; j <= ny; j += interval) {
-            painter.drawLine(j, 0, j, nx);
-        }
-        
-        // Draw rulers/coordinates if enabled
-        if (showRulers) {
-            painter.setPen(Qt::black);
-            
-            // Calculate appropriate ruler interval based on image size and resolution
-            int rulerInterval = gridInterval * 2; // Base value
-            if (resolution > 5.0) {
-                rulerInterval = std::max(1, gridInterval);
-            }
-            
-            // Adjust font size based on resolution
-            QFont rulerFont = painter.font();
-            if (resolution > 5.0) {
-                rulerFont.setPointSize(7);
-            } else {
-                rulerFont.setPointSize(9);
-            }
-            painter.setFont(rulerFont);
-            
-            // Draw coordinate labels on horizontal ruler
-            for (int i = 0; i < nx; i += rulerInterval) {
-                painter.drawText(2, i + 12, QString::number(i));
-            }
-            
-            // Draw coordinate labels on vertical ruler
-            for (int j = 0; j < ny; j += rulerInterval) {
-                painter.drawText(j + 2, 12, QString::number(j));
+        for (int i = 0; i < nx; i++) {
+            for (int j = 0; j < ny; j++) {
+                if (h[i][j] > 0 && dem[i][j] > NO_DATA_VALUE + 1) {
+                    maxDepth = std::max(maxDepth, h[i][j]);
+                }
             }
         }
+        
+        // Scale factor based on resolution
+        int scale = 4; // Base scale factor
+        if (resolution <= 0.5) scale = 6;
+        else if (resolution <= 1.0) scale = 5;
+        else if (resolution <= 5.0) scale = 4;
+        else scale = 3;
+        if (nx > 300 || ny > 300) scale = 2; // Reduce scale for large grids
+        
+        // Create the image
+        int imgWidth = ny * scale;
+        int imgHeight = nx * scale;
+        
+        // Create a high-quality image with alpha channel
+        QImage img(imgWidth, imgHeight, QImage::Format_ARGB32);
+        img.fill(Qt::white);  // White background
+        
+        // Use scanLine for faster pixel access
+        for (int i = 0; i < nx; i++) {
+            for (int j = 0; j < ny; j++) {
+                if (dem[i][j] <= NO_DATA_VALUE + 1) {
+                    // No data cells (invisible)
+                    continue;
+                }
+                
+                QColor cellColor;
+                double depth = h[i][j];
+                
+                if (depth <= 0) {
+                    // If no water, make slightly transparent to show terrain underneath
+                    cellColor = QColor(255, 255, 255, 30);  // Almost transparent white
+                } else {
+                    // Calculate normalized depth for color scaling
+                    double normalizedDepth = std::min(1.0, depth / maxDepth);
+                    
+                    // Blue gradient with increasing opacity for deeper water
+                    int alpha = int(50 + 150 * normalizedDepth);
+                    int red = int(50 - 50 * normalizedDepth);
+                    int green = int(150 - 100 * normalizedDepth);
+                    int blue = int(200 + 55 * normalizedDepth);
+                    
+                    cellColor = QColor(red, green, blue, alpha);
+                }
+                
+                // Draw the scaled cell
+                for (int si = 0; si < scale; si++) {
+                    for (int sj = 0; sj < scale; sj++) {
+                        int x = j * scale + sj;
+                        int y = i * scale + si;
+                        if (x < imgWidth && y < imgHeight) {
+                            img.setPixel(x, y, cellColor.rgba());
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Draw grid if enabled
+        if (showGrid) {
+            QPainter painter(&img);
+            painter.setPen(QPen(QColor(0, 0, 0, 40), 0.5)); // Semi-transparent grid lines
+            
+            int interval = gridInterval;
+            if (resolution > 5.0) interval = std::max(1, gridInterval / 2);
+            
+            // Horizontal gridlines
+            for (int i = 0; i <= nx; i += interval) {
+                painter.drawLine(0, i * scale, imgWidth, i * scale);
+            }
+            
+            // Vertical gridlines
+            for (int j = 0; j <= ny; j += interval) {
+                painter.drawLine(j * scale, 0, j * scale, imgHeight);
+            }
+            
+            // Draw scale legend at bottom right
+            if (maxDepth > 0) {
+                int legendWidth = 15;
+                int legendHeight = 80;
+                int legendX = imgWidth - legendWidth - 10;
+                int legendY = 10;
+                
+                QFont legendFont = painter.font();
+                legendFont.setPointSize(7);
+                painter.setFont(legendFont);
+                
+                // Legend title
+                painter.setPen(Qt::black);
+                painter.drawText(legendX - 4, legendY - 2, "Depth");
+                
+                // Draw gradient bar
+                for (int y = 0; y < legendHeight; y++) {
+                    double normalizedDepth = 1.0 - double(y) / legendHeight;
+                    int alpha = int(50 + 150 * normalizedDepth);
+                    int red = int(50 - 50 * normalizedDepth);
+                    int green = int(150 - 100 * normalizedDepth);
+                    int blue = int(200 + 55 * normalizedDepth);
+                    
+                    painter.setPen(QColor(red, green, blue, alpha));
+                    painter.drawLine(legendX, legendY + y, legendX + legendWidth, legendY + y);
+                }
+                
+                // Add depth values
+                painter.setPen(Qt::black);
+                painter.drawText(legendX + legendWidth + 1, legendY + 6, 
+                                 QString::number(maxDepth, 'f', 2) + "m");
+                painter.drawText(legendX + legendWidth + 1, legendY + legendHeight - 1, "0.00m");
+            }
+        }
+        
+        qDebug() << "Water depth visualization created successfully";
+        return img;
     }
-    
-    return img;
+    catch (const std::exception& e) {
+        qDebug() << "Exception in getWaterDepthImage:" << e.what();
+        return QImage(100, 100, QImage::Format_RGB32);  // Return empty image on failure
+    }
+    catch (...) {
+        qDebug() << "Unknown exception in getWaterDepthImage";
+        return QImage(100, 100, QImage::Format_RGB32);  // Return empty image on failure
+    }
 }
 
 QImage SimulationEngine::getDEMPreviewImage() const
 {
-    if (nx <= 0 || ny <= 0)
+    // Check if grid is valid
+    if (nx <= 0 || ny <= 0) {
+        qDebug() << "Invalid grid dimensions for DEM preview visualization";
         return QImage();
-
-    // Define margins for rulers and text
-    int rulerMargin = 30; // Space for rulers and coordinates
-    int topMargin = 40; // Space for title and instructions
-
-    // Calculate scale based on resolution
-    int scale = 4; // Increase default scale factor from 2 to 4
-    if (resolution <= 0.5) scale = 6;
-    else if (resolution <= 1.0) scale = 5;
-    else if (resolution <= 5.0) scale = 4;
-    else scale = 3;
-    if (nx > 300 || ny > 300) scale = 2;
-    
-    // Calculate image dimensions including margins
-    int demWidth = ny * scale;
-    int demHeight = nx * scale;
-    int totalWidth = demWidth + 2 * rulerMargin;
-    int totalHeight = demHeight + topMargin + rulerMargin;
-
-    QImage img(totalWidth, totalHeight, QImage::Format_RGB32);
-    img.fill(QColor(240, 240, 240)); // Fill background with light gray
-    
-    // Define the rectangle for the actual DEM display
-    QRect demRect(rulerMargin, topMargin, demWidth, demHeight);
-
-    // Find min/max elevations
-    double minElev = std::numeric_limits<double>::max();
-    double maxElev = std::numeric_limits<double>::lowest();
-    const double NO_DATA_VALUE = -999999.0;
-    for (int i = 0; i < nx; i++) {
-        for (int j = 0; j < ny; j++) {
-            if (dem[i][j] > NO_DATA_VALUE + 1) { 
-                minElev = std::min(minElev, dem[i][j]);
-                maxElev = std::max(maxElev, dem[i][j]);
-            }
-        }
     }
-    double elevRange = maxElev - minElev;
-    if (elevRange <= 0) elevRange = 1.0;
-    
-    // Create a temporary QImage for the DEM itself
-    QImage demOnlyImg(demWidth, demHeight, QImage::Format_RGB32);
 
-    // Draw DEM color map onto the temporary image
-    for (int i = 0; i < nx; i++) {
-        for (int j = 0; j < ny; j++) {
-            QColor cellColor;
-            if (dem[i][j] <= NO_DATA_VALUE + 1) { 
-                cellColor = QColor(200, 200, 200);
-            } else {
-                double normalizedElev = (dem[i][j] - minElev) / elevRange;
-                int red = int(155 + 100 * normalizedElev);
-                int green = int(200 - 60 * normalizedElev);
-                int blue = int(50 + 40 * normalizedElev);
-                cellColor = QColor(red, green, blue);
-            }
-            // Draw scaled cell onto demOnlyImg
-            for (int si = 0; si < scale; si++) {
-                for (int sj = 0; sj < scale; sj++) {
-                    demOnlyImg.setPixel(j * scale + sj, i * scale + si, cellColor.rgb());
+    try {
+        // Define margins for rulers and text
+        int rulerMargin = 30; // Space for rulers and coordinates
+        int topMargin = 40;   // Space for title and instructions
+    
+        // Calculate scale based on resolution
+        int scale = 4; // Base scale factor
+        if (resolution <= 0.5) scale = 6;
+        else if (resolution <= 1.0) scale = 5;
+        else if (resolution <= 5.0) scale = 4;
+        else scale = 3;
+        if (nx > 300 || ny > 300) scale = 2; // Reduce scale for large grids
+        
+        // Calculate image dimensions including margins
+        int demWidth = ny * scale;
+        int demHeight = nx * scale;
+        int totalWidth = demWidth + 2 * rulerMargin;
+        int totalHeight = demHeight + topMargin + rulerMargin;
+    
+        // Create the final image with margins for rulers and annotations
+        QImage result(totalWidth, totalHeight, QImage::Format_ARGB32);
+        result.fill(QColor(240, 240, 240)); // Light gray background
+        
+        // Create a temporary QImage for just the DEM itself (will be copied to the result)
+        QImage demImage(demWidth, demHeight, QImage::Format_ARGB32);
+    
+        // Find elevation range for color scaling
+        double minElev = std::numeric_limits<double>::max();
+        double maxElev = std::numeric_limits<double>::lowest();
+        const double NO_DATA_VALUE = -999999.0;
+        
+        for (int i = 0; i < nx; i++) {
+            for (int j = 0; j < ny; j++) {
+                if (dem[i][j] > NO_DATA_VALUE + 1) { 
+                    minElev = std::min(minElev, dem[i][j]);
+                    maxElev = std::max(maxElev, dem[i][j]);
                 }
             }
         }
-    }
-
-    // --- Painting Starts --- 
-    QPainter painter(&img);
-    painter.drawImage(demRect, demOnlyImg);
-    painter.setPen(QPen(Qt::black, 1)); 
-    painter.setBrush(Qt::NoBrush);
-    painter.drawRect(demRect.adjusted(-1, -1, 1, 1));
-
-    // Draw Grid (inside the DEM area)
-    if (showGrid) {
-        painter.setPen(QPen(QColor(0, 0, 0, 40), 0.5));
-        int interval = gridInterval;
-        if (resolution > 5.0) interval = std::max(1, gridInterval / 2);
-        // Horizontal gridlines
-        for (int i = 0; i <= nx; i += interval) {
-            painter.drawLine(demRect.left(), demRect.top() + i * scale, demRect.right(), demRect.top() + i * scale);
-        }
-        // Vertical gridlines
-        for (int j = 0; j <= ny; j += interval) {
-            painter.drawLine(demRect.left() + j * scale, demRect.top(), demRect.left() + j * scale, demRect.bottom());
-        }
-    }
+        double elevRange = maxElev - minElev;
+        if (elevRange <= 0) elevRange = 1.0;
     
-    // Draw Rulers and Coordinates (in the margins)
-    if (showRulers) {
-        painter.setPen(Qt::black);
-        int rulerInterval = gridInterval * 2;
-        if (resolution > 5.0) rulerInterval = std::max(1, gridInterval);
-        else if (resolution < 1.0) rulerInterval = gridInterval * 3;
-        QFont rulerFont = painter.font();
-        rulerFont.setPointSize(8); // Smaller font for rulers
-        painter.setFont(rulerFont);
+        // Draw the DEM with terrain coloring
+        for (int i = 0; i < nx; i++) {
+            for (int j = 0; j < ny; j++) {
+                QColor cellColor;
+                if (dem[i][j] <= NO_DATA_VALUE + 1) { 
+                    cellColor = QColor(200, 200, 200); // Gray for no-data
+                } else {
+                    // Calculate normalized elevation (0-1 range)
+                    double normalizedElev = (dem[i][j] - minElev) / elevRange;
+                    
+                    // Create terrain color
+                    int red = int(155 + 100 * normalizedElev);       // Brighten with height
+                    int green = int(200 - 60 * normalizedElev);      // Reduce with height
+                    int blue = int(50 + 40 * normalizedElev);        // Slight blue for high elevations
+                    cellColor = QColor(red, green, blue);
+                }
+                
+                // Draw the scaled cell by filling a rectangle
+                for (int si = 0; si < scale; si++) {
+                    for (int sj = 0; sj < scale; sj++) {
+                        demImage.setPixel(j * scale + sj, i * scale + si, cellColor.rgb());
+                    }
+                }
+            }
+        }
+    
+        // Set up painter for the final image
+        QPainter painter(&result);
         
-        // Vertical Ruler (Left Margin)
-        for (int i = 0; i < nx; i += rulerInterval) {
-            int yPos = demRect.top() + i * scale + (scale / 2);
-            painter.drawLine(rulerMargin - 5, yPos, rulerMargin, yPos);
-            painter.drawText(5, yPos + 4, QString::number(i));
-        }
-        // Horizontal Ruler (Bottom Margin)
-        for (int j = 0; j < ny; j += rulerInterval) {
-            int xPos = demRect.left() + j * scale + (scale / 2);
-            painter.drawLine(xPos, demRect.bottom(), xPos, demRect.bottom() + 5);
-            painter.drawText(xPos - 5, demRect.bottom() + 15, QString::number(j));
-        }
-    }
-
-    // Mark selected outlet cells (inside the DEM area)
-    painter.setPen(Qt::NoPen);
+        // Define the rectangle for the actual DEM display within the result image
+        QRect demRect(rulerMargin, topMargin, demWidth, demHeight);
+        
+        // Copy the DEM image into the result at the correct position
+        painter.drawImage(demRect, demImage);
+        
+        // Draw a border around the DEM area
+        painter.setPen(QPen(Qt::black, 1)); 
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(demRect.adjusted(-1, -1, 1, 1));
     
-    // First draw automatic outlets (if any and not using manual)
-    if (!useManualOutlets) {
-        painter.setBrush(QColor(0, 150, 255, 150)); // Blue for automatic outlets
-        QVector<QPoint> autoOutlets = getAutomaticOutletCells();
-        for (const QPoint &p : autoOutlets) {
+        // Draw Grid (inside the DEM area)
+        if (showGrid) {
+            painter.setPen(QPen(QColor(0, 0, 0, 40), 0.5)); // Semi-transparent grid lines
+            int interval = gridInterval;
+            if (resolution > 5.0) interval = std::max(1, gridInterval / 2);
+            
+            // Horizontal gridlines
+            for (int i = 0; i <= nx; i += interval) {
+                painter.drawLine(
+                    demRect.left(), 
+                    demRect.top() + i * scale, 
+                    demRect.right(), 
+                    demRect.top() + i * scale
+                );
+            }
+            
+            // Vertical gridlines
+            for (int j = 0; j <= ny; j += interval) {
+                painter.drawLine(
+                    demRect.left() + j * scale, 
+                    demRect.top(), 
+                    demRect.left() + j * scale, 
+                    demRect.bottom()
+                );
+            }
+        }
+        
+        // Draw Rulers and Coordinates if enabled
+        if (showRulers) {
+            painter.setPen(Qt::black);
+            int rulerInterval = gridInterval * 2;
+            if (resolution > 5.0) rulerInterval = std::max(1, gridInterval);
+            else if (resolution < 1.0) rulerInterval = gridInterval * 3;
+            
+            QFont rulerFont = painter.font();
+            rulerFont.setPointSize(8); // Smaller font for rulers
+            painter.setFont(rulerFont);
+            
+            // Vertical Ruler (Left Margin)
+            for (int i = 0; i < nx; i += rulerInterval) {
+                int yPos = demRect.top() + i * scale + (scale / 2);
+                painter.drawLine(rulerMargin - 5, yPos, rulerMargin, yPos);
+                painter.drawText(5, yPos + 4, QString::number(i));
+            }
+            
+            // Horizontal Ruler (Bottom Margin)
+            for (int j = 0; j < ny; j += rulerInterval) {
+                int xPos = demRect.left() + j * scale + (scale / 2);
+                painter.drawLine(xPos, demRect.bottom(), xPos, demRect.bottom() + 5);
+                painter.drawText(xPos - 5, demRect.bottom() + 15, QString::number(j));
+            }
+        }
+    
+        // Mark selected outlet cells
+        painter.setPen(Qt::NoPen);
+        
+        // First draw automatic outlets (if not using manual)
+        if (!useManualOutlets) {
+            painter.setBrush(QColor(0, 150, 255, 150)); // Blue for automatic outlets
+            QVector<QPoint> autoOutlets = getAutomaticOutletCells();
+            for (const QPoint &p : autoOutlets) {
+                if (p.x() >= 0 && p.x() < nx && p.y() >= 0 && p.y() < ny) {
+                    int cellX = demRect.left() + p.y() * scale;
+                    int cellY = demRect.top() + p.x() * scale;
+                    // Draw a circle for automatic outlets
+                    painter.drawEllipse(cellX, cellY, scale, scale);
+                }
+            }
+        }
+        
+        // Draw manual outlets on top (in red)
+        painter.setBrush(QColor(255, 0, 0, 150)); // Red for manual outlets
+        for (const QPoint &p : manualOutletCells) {
             if (p.x() >= 0 && p.x() < nx && p.y() >= 0 && p.y() < ny) {
                 int cellX = demRect.left() + p.y() * scale;
                 int cellY = demRect.top() + p.x() * scale;
-                // Draw a circle for automatic outlets
+                // Draw a circle
                 painter.drawEllipse(cellX, cellY, scale, scale);
             }
         }
-    }
     
-    // Draw manual outlets on top
-    painter.setBrush(QColor(255, 0, 0, 150)); // Red for manual outlets
-    for (const QPoint &p : manualOutletCells) {
-        if (p.x() >= 0 && p.x() < nx && p.y() >= 0 && p.y() < ny) {
-            int cellX = demRect.left() + p.y() * scale;
-            int cellY = demRect.top() + p.x() * scale;
-            // Draw a circle instead of a rectangle for less visual clutter
-            painter.drawEllipse(cellX, cellY, scale, scale);
-        }
-    }
-
-    // Draw Legend (Top Right) - Smaller and simpler
-    int legendWidth = 15;
-    int legendHeight = 80;
-    int legendX = totalWidth - legendWidth - 10;
-    int legendY = 10;
-    QFont legendFont = painter.font();
-    legendFont.setPointSize(7); // Even smaller font
-    painter.setFont(legendFont);
-    
-    // Elevation Legend
-    painter.setPen(Qt::black);
-    painter.drawText(legendX - 2, legendY - 2, "Elev.");
-    for (int y = 0; y < legendHeight; y++) {
-        double normalizedElev = 1.0 - double(y) / legendHeight;
-        int red = int(155 + 100 * normalizedElev);
-        int green = int(200 - 60 * normalizedElev);
-        int blue = int(50 + 40 * normalizedElev);
-        painter.setPen(QColor(red, green, blue));
-        painter.drawLine(legendX, legendY + y, legendX + legendWidth, legendY + y);
-    }
-    painter.setPen(Qt::black);
-    painter.drawText(legendX + legendWidth + 1, legendY + 6, QString::number(maxElev, 'f', 0));
-    painter.drawText(legendX + legendWidth + 1, legendY + legendHeight - 1, QString::number(minElev, 'f', 0));
-    
-    // Outlet Legend Marker
-    painter.setBrush(QColor(255, 0, 0, 150));
-    painter.setPen(Qt::NoPen);
-    painter.drawEllipse(legendX + legendWidth/2 - 3, legendY + legendHeight + 5, 6, 6); // Small circle
-    painter.setPen(Qt::black);
-    painter.drawText(legendX + legendWidth + 2, legendY + legendHeight + 12, "Manual Outlet");
-    
-    // Add automatic outlet to legend if not using manual outlets
-    if (!useManualOutlets) {
-        painter.setBrush(QColor(0, 150, 255, 150));
-        painter.setPen(Qt::NoPen);
-        painter.drawEllipse(legendX + legendWidth/2 - 3, legendY + legendHeight + 20, 6, 6); // Small circle
+        // Draw Legend (Top Right)
+        int legendWidth = 15;
+        int legendHeight = 80;
+        int legendX = totalWidth - legendWidth - 10;
+        int legendY = 10;
+        
+        QFont legendFont = painter.font();
+        legendFont.setPointSize(7); // Small font for legend
+        painter.setFont(legendFont);
+        
+        // Elevation Legend
         painter.setPen(Qt::black);
-        painter.drawText(legendX + legendWidth + 2, legendY + legendHeight + 27, "Auto Outlet");
-    }
-
-    // Instructions and Info (Top Margin) - Simplified
-    QFont infoFont = painter.font();
-    infoFont.setPointSize(9);
-    painter.setFont(infoFont);
-    painter.setPen(Qt::darkGray); // Less prominent color
-    painter.drawText(rulerMargin, 15, "Click DEM to select outlets. Drag=Pan, Scroll=Zoom, DblClick=Reset.");
-    painter.drawText(rulerMargin, 30, QString("Res: %1m | Outlets: %2")
+        painter.drawText(legendX - 2, legendY - 2, "Elev.");
+        
+        // Draw gradient bar
+        for (int y = 0; y < legendHeight; y++) {
+            double normalizedElev = 1.0 - double(y) / legendHeight;
+            int red = int(155 + 100 * normalizedElev);
+            int green = int(200 - 60 * normalizedElev);
+            int blue = int(50 + 40 * normalizedElev);
+            painter.setPen(QColor(red, green, blue));
+            painter.drawLine(legendX, legendY + y, legendX + legendWidth, legendY + y);
+        }
+        
+        // Add min/max elevation labels
+        painter.setPen(Qt::black);
+        painter.drawText(legendX + legendWidth + 1, legendY + 6, 
+                         QString::number(maxElev, 'f', 0));
+        painter.drawText(legendX + legendWidth + 1, legendY + legendHeight - 1, 
+                         QString::number(minElev, 'f', 0));
+        
+        // Outlet Legend Markers
+        // Manual outlet marker
+        painter.setBrush(QColor(255, 0, 0, 150));
+        painter.setPen(Qt::NoPen);
+        painter.drawEllipse(legendX + legendWidth/2 - 3, legendY + legendHeight + 5, 6, 6);
+        painter.setPen(Qt::black);
+        painter.drawText(legendX + legendWidth + 2, legendY + legendHeight + 12, "Manual Outlet");
+        
+        // Add automatic outlet to legend if applicable
+        if (!useManualOutlets) {
+            painter.setBrush(QColor(0, 150, 255, 150));
+            painter.setPen(Qt::NoPen);
+            painter.drawEllipse(legendX + legendWidth/2 - 3, legendY + legendHeight + 20, 6, 6);
+            painter.setPen(Qt::black);
+            painter.drawText(legendX + legendWidth + 2, legendY + legendHeight + 27, "Auto Outlet");
+        }
+    
+        // Add Instructions and Info (Top Margin)
+        QFont infoFont = painter.font();
+        infoFont.setPointSize(9);
+        painter.setFont(infoFont);
+        painter.setPen(Qt::darkGray);
+        painter.drawText(rulerMargin, 15, 
+                         "Click DEM to select outlets. Drag=Pan, Scroll=Zoom, DblClick=Reset.");
+        painter.drawText(rulerMargin, 30, 
+                         QString("Res: %1m | Outlets: %2")
                          .arg(resolution, 0, 'f', 1)
                          .arg(manualOutletCells.size()));
-
-    painter.end();
-    // --- Painting Ends --- 
-
-    return img;
+    
+        qDebug() << "DEM preview visualization created successfully";
+        return result;
+    }
+    catch (const std::exception& e) {
+        qDebug() << "Exception in getDEMPreviewImage:" << e.what();
+        return QImage(100, 100, QImage::Format_RGB32);  // Return empty image on failure
+    }
+    catch (...) {
+        qDebug() << "Unknown exception in getDEMPreviewImage";
+        return QImage(100, 100, QImage::Format_RGB32);  // Return empty image on failure
+    }
 }
 
 QMap<QPoint, double> SimulationEngine::getPerOutletDrainage() const

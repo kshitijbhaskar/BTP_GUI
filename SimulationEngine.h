@@ -103,6 +103,79 @@ public:
     
     // New method to get automatic outlet cells for display purposes
     QVector<QPoint> getAutomaticOutletCells() const;
+    
+    // New direct data access methods for VTK visualization
+    double getDEMValue(int i, int j) const {
+        if (i >= 0 && i < nx && j >= 0 && j < ny) {
+            return dem[i][j];
+        }
+        return -999999.0; // Return no-data value if out of bounds
+    }
+    
+    double getWaterDepth(int i, int j) const {
+        if (i >= 0 && i < nx && j >= 0 && j < ny) {
+            return h[i][j];
+        }
+        return 0.0; // Return zero if out of bounds
+    }
+    
+    // Get the no-data value for DEM cells
+    double getNoDataValue() const { return -999999.0; }
+    
+    // Get flow vector data for visualization (placeholder implementation)
+    void getFlowVector(int i, int j, double& vx, double& vy) const {
+        // Placeholder flow vector calculation (would be replaced with actual flow calculation)
+        vx = vy = 0.0;
+        if (i >= 0 && i < nx && j >= 0 && j < ny) {
+            double depth = h[i][j];
+            if (depth > min_depth) {
+                // Simple flow vector based on terrain slope to neighbors
+                // In a real implementation, this would use actual calculated flow directions
+                if (i > 0 && j > 0 && i < nx-1 && j < ny-1) {
+                    double slope_x = (dem[i][j-1] - dem[i][j+1]) / (2 * resolution);
+                    double slope_y = (dem[i-1][j] - dem[i+1][j]) / (2 * resolution);
+                    
+                    // Scale by water depth (deeper water flows faster)
+                    double magnitude = sqrt(slope_x*slope_x + slope_y*slope_y);
+                    if (magnitude > 0.001) {
+                        vx = slope_x / magnitude * depth * 0.5;
+                        vy = slope_y / magnitude * depth * 0.5;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Get max water depth across the grid
+    double getMaxWaterDepth() const {
+        double maxDepth = 0.0;
+        for (int i = 0; i < nx; i++) {
+            for (int j = 0; j < ny; j++) {
+                if (dem[i][j] > getNoDataValue() + 1) {
+                    maxDepth = std::max(maxDepth, h[i][j]);
+                }
+            }
+        }
+        return maxDepth;
+    }
+    
+    // Get elevation range
+    void getElevationRange(double& minElev, double& maxElev) const {
+        minElev = std::numeric_limits<double>::max();
+        maxElev = std::numeric_limits<double>::lowest();
+        for (int i = 0; i < nx; i++) {
+            for (int j = 0; j < ny; j++) {
+                if (dem[i][j] > getNoDataValue() + 1) {
+                    minElev = std::min(minElev, dem[i][j]);
+                    maxElev = std::max(maxElev, dem[i][j]);
+                }
+            }
+        }
+        if (minElev >= maxElev) {
+            minElev = 0.0;
+            maxElev = 100.0;
+        }
+    }
 
 signals:
     // Signal emitted after each simulation step with the current time
