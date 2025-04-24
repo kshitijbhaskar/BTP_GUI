@@ -1033,8 +1033,12 @@ QImage SimulationEngine::getDEMPreviewImage() const
     if (showRulers) {
         painter.setPen(Qt::black);
         int rulerInterval = gridInterval * 2;
-        if (resolution > 5.0) rulerInterval = std::max(1, gridInterval);
-        else if (resolution < 1.0) rulerInterval = gridInterval * 3;
+        if (resolution > 5.0) {
+            rulerInterval = static_cast<int>(std::max(1.0, static_cast<double>(gridInterval)));
+        }
+        else if (resolution < 1.0) {
+            rulerInterval = gridInterval * 3;
+        }
         QFont rulerFont = painter.font();
         rulerFont.setPointSize(8); // Smaller font for rulers
         painter.setFont(rulerFont);
@@ -1329,7 +1333,7 @@ QImage SimulationEngine::getFlowAccumulationImage() const
         int interval = gridInterval;
         if (resolution > 5.0) 
         {
-            interval = std::max(1, gridInterval / 2);
+            interval = static_cast<int>(std::max(1.0, static_cast<double>(gridInterval) / 2.0));
         }
         
         // Draw horizontal gridlines
