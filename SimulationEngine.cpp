@@ -1189,7 +1189,7 @@ void SimulationEngine::routeWaterToOutlets()
         int j = idx % ny;  // column
         
         // Make sure coordinates are valid
-        if (i < 0 || i >= nx || j < 0 || j >= ny || dem[idx] <= -999998.0)
+        if (i < 0 || i >= nx || j < 0 || j >= ny || dem[idx(i,j)] <= -999998.0)
             continue;
             
         // Find multiple paths from the outlet toward higher accumulation areas
@@ -1228,7 +1228,7 @@ void SimulationEngine::routeWaterToOutlets()
 
             // Keep track of cells already in this path to avoid loops
             std::set<int> pathCellIndices;
-            pathCellIndices.insert(currentI * ny + currentJ);
+            pathCellIndices.insert(idx(currentI, currentJ));
 
             for (int step = 0; step < pathLength; step++) {
                 // Find the best next cell to include in the path (highest flow accumulation)
@@ -1307,9 +1307,12 @@ QImage SimulationEngine::getFlowAccumulationImage() const
 
     // Find the max flow accumulation value for scaling
     double maxFlow = 0.0;
-    for (int k = 0; k < nx * ny; k++) {
-        if (dem[k] > -999998.0) {
-            maxFlow = std::max(maxFlow, flowAccumulationGrid[k]);
+    for (int i = 0; i < nx; i++) {
+        for (int j = 0; j < ny; j++) {
+            int k = idx(i, j);
+            if (dem[k] > -999998.0) {
+                maxFlow = std::max(maxFlow, flowAccumulationGrid[k]);
+            }
         }
     }
     
