@@ -501,12 +501,16 @@ void SimulationEngine::computeOutletCellsByPercentile(double percentile)
     std::vector<std::pair<double, int>> boundaryCells; // Store <elevation, 1D_index>
 
     // Iterate through all boundary cells (top, bottom, left, right)
-    for (int i = 0; i < nx; ++i) {
-        for (int j = 0; j < ny; ++j) {
+    for (int i = 0; i < nx; ++i) 
+    {
+        for (int j = 0; j < ny; ++j) 
+        {
             // Check if the cell is on the boundary
-            if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1) {
+            if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1) 
+            {
                 // Check if it's a valid DEM cell (not no-data)
-                if (dem[idx(i,j)] > -999998.0) {
+                if (dem[idx(i,j)] > -999998.0) 
+                {
                     int index1D = i * ny + j;
                     boundaryCells.push_back({dem[idx(i,j)], index1D});
                 }
@@ -514,14 +518,18 @@ void SimulationEngine::computeOutletCellsByPercentile(double percentile)
         }
     }
 
-    if (boundaryCells.empty()) {
+    if (boundaryCells.empty()) 
+    {
         qDebug() << "No valid boundary cells found for automatic outlet selection.";
         // As a fallback, maybe select the globally lowest cell?
         double minElev = std::numeric_limits<double>::max();
         int minIdx = -1;
-        for(int i=0; i<nx; ++i) {
-            for(int j=0; j<ny; ++j) {
-                if (dem[idx(i,j)] > -999998.0 && dem[idx(i,j)] < minElev) {
+        for(int i=0; i<nx; ++i) 
+        {
+            for(int j=0; j<ny; ++j) 
+            {
+                if (dem[idx(i,j)] > -999998.0 && dem[idx(i,j)] < minElev) 
+                {
                     minElev = dem[idx(i,j)];
                     minIdx = i * ny + j;
                 }
@@ -534,19 +542,19 @@ void SimulationEngine::computeOutletCellsByPercentile(double percentile)
     // Sort boundary cells by elevation
     std::sort(boundaryCells.begin(), boundaryCells.end());
 
-    // Determine the number of outlets based on percentile
-    int numOutlets = std::max(1, (int)(percentile * boundaryCells.size()));
+    // Determine the number of outlets based on percentile - fix ambiguous max
+    int numOutlets = static_cast<int>(std::max(1.0, static_cast<double>(percentile * boundaryCells.size())));
     
-    // Ensure at least one outlet, but cap at a reasonable number
     // Use multiple std::min calls instead of initializer list to avoid ambiguity
-    int cap1 = std::min(numOutlets, (int)(boundaryCells.size() * 0.1));
-    int cap2 = std::min(cap1, 50);
-    numOutlets = std::max(1, cap2);
+    int cap1 = static_cast<int>(std::min(static_cast<double>(numOutlets), static_cast<double>(boundaryCells.size() * 0.1)));
+    int cap2 = static_cast<int>(std::min(static_cast<double>(cap1), 50.0));
+    numOutlets = static_cast<int>(std::max(1.0, static_cast<double>(cap2)));
 
     qDebug() << "Selecting top" << numOutlets << "lowest boundary cells as automatic outlets.";
 
     // Add the lowest 'numOutlets' cells to outletCells
-    for (int k = 0; k < numOutlets; ++k) {
+    for (int k = 0; k < numOutlets; ++k) 
+    {
         outletCells.push_back(boundaryCells[k].second);
         int i = boundaryCells[k].second / ny;
         int j = boundaryCells[k].second % ny;
@@ -707,7 +715,7 @@ void SimulationEngine::stepSimulation()
         h[idx] += rRate * dt;
         
         // Apply infiltration using Green-Ampt model (simplified)
-        double infiltration = std::min(h[idx], Ks * dt);
+        double infiltration = std::min<double>(h[idx], Ks * dt); // Use explicit template argument
         h[idx] -= infiltration;
         
         // Track total water in system for mass conservation
@@ -754,7 +762,7 @@ void SimulationEngine::stepSimulation()
             
             // Check if outflow would remove too much water
             double h_local_max = h[k] * cellArea / (resolution * dt);
-            Q = std::min(Q, h_local_max);
+            Q = std::min<double>(Q, h_local_max); // Use explicit template argument
             
             std::pair<int, double> outflow_pair;
             outflow_pair.first = nb_idx;
@@ -926,7 +934,10 @@ QImage SimulationEngine::getWaterDepthImage() const
             {
                 // Scale water depth to blue intensity
                 // Use a logarithmic scale to better show small water depths
-                double depthValue = std::min(1.0, log10(1.0 + h[k] * 100.0) / 2.0);
+                double depth = h[k];
+                // Clamp depth to a reasonable range for visualization
+                depth = std::min<double>(depth, 2.0); // Use explicit template argument
+                double depthValue = std::min(1.0, log10(1.0 + depth * 100.0) / 2.0);
                 int blueValue = static_cast<int>(255 * depthValue);
                 
                 // Regular water: blue with alpha based on depth
@@ -1252,7 +1263,7 @@ QImage SimulationEngine::getFlowAccumulationImage() const
             int k = idx(i, j);
             if (dem[k] > -999998.0) 
             {
-                maxFlow = std::max(maxFlow, flowAccumulationGrid[k]);
+                maxFlow = std::max<double>(maxFlow, flowAccumulationGrid[k]);
             }
         }
     }
@@ -1289,6 +1300,7 @@ QImage SimulationEngine::getFlowAccumulationImage() const
             {
                 // For low flow areas, use terrain coloring (green to brown gradient)
                 double normalizedElev = (dem[k] - dem[idx(outletRow,j)]) / 10.0;
+                // Force both arguments to be double to avoid ambiguity
                 normalizedElev = std::max(0.0, std::min(1.0, normalizedElev));
                 
                 red = static_cast<int>(155 + 100 * normalizedElev);
