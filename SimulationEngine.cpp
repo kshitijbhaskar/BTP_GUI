@@ -1237,25 +1237,38 @@ void SimulationEngine::routeWaterToOutlets()
         {
             continue;
         }
-            
-        // Calculate outlet flow - use a higher coefficient for outlets to encourage drainage
-        double outletDepth = h[outlet_idx];
-        double drainFactor = 5.0; // Increased drainage rate at outlets from 3.0 to 5.0
         
-        // Use simplified outlet flow calculation: portion of water leaves each time step
-        double outletVolume = outletDepth * cellArea * 0.7 * drainFactor; // Increase from 0.5 to 0.7
+        // Apply Manning's equation consistently for outlet cells
+        // Assuming a fixed slope for outlet drainage
+        double outletDepth = h[outlet_idx];
+        double outletSlope = 0.01; // Standard drainage slope of 1%
+        
+        // Manning's formula: V = (1/n) * R^(2/3) * S^(1/2)
+        // For shallow water, R ~= h
+        // Q = V * A, where A = resolution * h
+        // Outlet flow using Manning's equation
+        double velocity = (1.0 / n_manning) * std::pow(outletDepth, 2.0/3.0) * std::sqrt(outletSlope);
+        double outletFlow = velocity * outletDepth * resolution; // Flow rate (m³/s)
+        double outletVolume = outletFlow * dt; // Volume over time step (m³)
+        
+        // Ensure we don't remove more water than available
+        double availableVolume = outletDepth * cellArea;
+        if (outletVolume > availableVolume) {
+            outletVolume = availableVolume * 0.95; // Limit to 95% of available water to avoid emptying completely
+        }
+        
+        // Update water depth
         h[outlet_idx] -= outletVolume / cellArea;
         
-        // Ensure we don't go negative
+        // Ensure non-negative water depths
         if (h[outlet_idx] < 0.0)
         {
-            outletVolume += h[outlet_idx] * cellArea;
             h[outlet_idx] = 0.0;
         }
         
         // Log drainage volumes when they occur
         qDebug() << "Draining at outlet (" << row << "," << col << "): " << outletVolume 
-                 << " m³, remaining depth: " << h[outlet_idx];
+                 << " m³, velocity: " << velocity << " m/s, remaining depth: " << h[outlet_idx];
         
         // Track per-outlet drainage
         QPoint outletPoint(row, col);
