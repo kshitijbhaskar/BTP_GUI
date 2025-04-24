@@ -26,14 +26,14 @@
 SimulationEngine::SimulationEngine(QObject *parent)
     : QObject(parent),
     nx(0), ny(0),
-    resolution(1.0),
-    n_manning(0.035),
-    Ks(0.00001),
-    min_depth(0.001),
-    totalTime(0.0),
+    resolution(0.25),
+    n_manning(0.03),
+    Ks(1e-6),
+    min_depth(1e-5),
+    totalTime(1800.0),
     time(0.0),
-    dt(0.1),
-    rainfallRate(0.0001),
+    dt(1.0),
+    rainfallRate(0.001),
     useTimeVaryingRainfall(false),
     outletRow(0),
     useManualOutlets(false),
@@ -583,8 +583,8 @@ void SimulationEngine::setRainfallSchedule(const QVector<QPair<double, double>>&
         std::sort(timeVaryingRainfall.begin(), timeVaryingRainfall.end(), 
                   [](const QPair<double, double>& a, const QPair<double, double>& b) -> bool
                   {
-                      return a.first < b.first;
-                  });
+                  return a.first < b.first;
+              });
     }
     
     // Ensure first entry is at time 0
@@ -634,6 +634,7 @@ void SimulationEngine::stepSimulation()
     // Basic validation
     if (dem.empty() || h.empty()) 
     {
+        qDebug() << "Cannot step simulation: DEM or water depth grid is empty";
         return;
     }
 
@@ -646,6 +647,14 @@ void SimulationEngine::stepSimulation()
             allZero = false;
             break;
         }
+    }
+
+    // Debug output every few steps
+    if (int(time) % 10 == 0) {
+        qDebug() << ">>> Simulation Time:" << time << "s";
+        qDebug() << "    Current Rainfall Rate:" << rainfallRate << "m/s";
+        qDebug() << "    Total Drainage So Far:" << drainageVolume << "m³";
+        qDebug() << "    Active Cells:" << activeCells.size();
     }
 
     // Check if we need to initialize active cells
@@ -669,9 +678,10 @@ void SimulationEngine::stepSimulation()
         std::sort(activeCells.begin(), activeCells.end());
     }
 
-    // Return if nothing is active
+    // Return if nothing is active and no rainfall
     if (activeCells.empty() && allZero && rainfallRate <= 0 && !useTimeVaryingRainfall) 
     {
+        qDebug() << "No active cells and no rainfall, skipping step";
         return;
     }
 
@@ -687,40 +697,71 @@ void SimulationEngine::stepSimulation()
     std::unordered_map<int, double> delta_h;
     delta_h.reserve(activeCells.size() * 2);  // Reserve a reasonable size
 
-    // Apply rainfall/infiltration only to active cells or cells that might get wet
-    #pragma omp parallel for
-    for (int a = 0; a < (int)activeCells.size(); a++) 
+    // Get current rainfall rate (either constant or time-varying)
+    double rRate = rainfallRate;
+    if (useTimeVaryingRainfall && timeVaryingRainfall.size() > 0) 
     {
-        int idx = activeCells[a];
-        // Apply rainfall to the cell
-        double rRate = rainfallRate;
-        
-        if (useTimeVaryingRainfall && timeVaryingRainfall.size() > 0) 
+        // Find appropriate time slot
+        for (int i = 0; i < (int)timeVaryingRainfall.size(); i++) 
         {
-            // Find appropriate time slot
-            for (int i = 0; i < (int)timeVaryingRainfall.size(); i++) 
+            if (time >= timeVaryingRainfall[i].first) 
             {
-                if (time >= timeVaryingRainfall[i].first) 
-                {
-                    rRate = timeVaryingRainfall[i].second / 3600.0; // Convert from mm/hr to m/s
-                } 
-                else 
-                {
-                    break;
+                rRate = timeVaryingRainfall[i].second / 3600.0; // Convert from mm/hr to m/s
+            } 
+            else 
+            {
+                break;
+            }
+        }
+    }
+
+    // Apply rainfall to ALL cells (not just active ones)
+    if (rRate > 0) {
+        #pragma omp parallel for
+        for (int i = 0; i < nx; i++) {
+            for (int j = 0; j < ny; j++) {
+                int k = idx(i, j);
+                
+                // Skip invalid DEM cells
+                if (dem[k] <= -999998.0) continue;
+                
+                // Apply rainfall
+                h[k] += rRate * dt;
+                
+                // Apply infiltration using Green-Ampt model
+                double infiltration = std::min<double>(h[k], Ks * dt);
+                h[k] -= infiltration;
+                
+                // Activate if cell has water
+                if (h[k] > min_depth && !isActive[k]) {
+                    #pragma omp critical
+                    {
+                        isActive[k] = 1;
+                        if (std::find(activeCells.begin(), activeCells.end(), k) == activeCells.end()) {
+                            activeCells.push_back(k);
+                        }
+                    }
                 }
             }
         }
         
-        // Apply rainfall
-        h[idx] += rRate * dt;
-        
-        // Apply infiltration using Green-Ampt model (simplified)
-        double infiltration = std::min<double>(h[idx], Ks * dt); // Use explicit template argument
-        h[idx] -= infiltration;
-        
-        // Track total water in system for mass conservation
-        #pragma omp atomic
-        totalSystemWater += h[idx] * cellArea;
+        // Re-sort active cells if new ones were added
+        std::sort(activeCells.begin(), activeCells.end());
+    }
+    
+    // Calculate total water in system
+    for (int i = 0; i < nx; i++) {
+        for (int j = 0; j < ny; j++) {
+            int k = idx(i, j);
+            if (dem[k] > -999998.0) {
+                totalSystemWater += h[k] * cellArea;
+            }
+        }
+    }
+    
+    // Debug output for water volume
+    if (int(time) % 10 == 0) {
+        qDebug() << "    Total System Water:" << totalSystemWater << "m³";
     }
     
     // Calculate outflows for each active cell
@@ -847,26 +888,9 @@ void SimulationEngine::stepSimulation()
         }
     }
     
-    // Search for new active cells that might appear due to rainfall
-    if (rainfallRate > 0 || useTimeVaryingRainfall) 
-    {
-        for (int i = 0; i < nx; i++) 
-        {
-            for (int j = 0; j < ny; j++) 
-            {
-                int k = idx(i, j);
-                if (!isActive[k] && h[k] > min_depth) 
-                {
-                    isActive[k] = 1;
-                    nextActiveCells.push_back(k);
-                }
-            }
-        }
-    }
-
     // Process outlet cells to handle drainage
-    routeWaterToOutlets();
-    
+    routeWaterToOutlets(); 
+
     // Swap active cell lists for next step
     std::swap(activeCells, nextActiveCells);
     
@@ -936,12 +960,12 @@ QImage SimulationEngine::getWaterDepthImage() const
                 // Use a logarithmic scale to better show small water depths
                 double depth = h[k];
                 // Clamp depth to a reasonable range for visualization
-                depth = std::min<double>(depth, 2.0); // Use explicit template argument
-                double depthValue = std::min(1.0, log10(1.0 + depth * 100.0) / 2.0);
+                depth = std::min<double>(depth, 0.1); // Decrease from 2.0 to 0.1 to make small depths more visible
+                double depthValue = std::min(1.0, log10(1.0 + depth * 1000.0) / 2.0); // Increase from 100.0 to 1000.0
                 int blueValue = static_cast<int>(255 * depthValue);
                 
                 // Regular water: blue with alpha based on depth
-                img.setPixel(j, i, qRgba(0, 64, blueValue, 200));
+                img.setPixel(j, i, qRgba(0, 128, 255, 200)); // Brighter blue (0, 128, 255 instead of 0, 64, blueValue)
             }
         }
     }
@@ -1180,8 +1204,9 @@ QVector<QPoint> SimulationEngine::getAutomaticOutletCells() const
 
 void SimulationEngine::routeWaterToOutlets()
 {
-    if (dem.empty() || h.empty() || activeCells.empty())
+    if (dem.empty() || h.empty())
     {
+        qDebug() << "No DEM or water depth data available for drainage calculation";
         return;
     }
 
@@ -1201,18 +1226,24 @@ void SimulationEngine::routeWaterToOutlets()
             continue;
         }
         
+        // Log outlet cell water depth periodically
+        if (int(time) % 5 == 0) {
+            qDebug() << "Outlet cell (" << row << "," << col << ") depth:" << h[outlet_idx]
+                     << ", min_depth:" << min_depth;
+        }
+                        
         // Skip cells with no water
         if (h[outlet_idx] <= min_depth)
         {
             continue;
         }
-        
+            
         // Calculate outlet flow - use a higher coefficient for outlets to encourage drainage
         double outletDepth = h[outlet_idx];
-        double drainFactor = 3.0; // Increased drainage rate at outlets
+        double drainFactor = 5.0; // Increased drainage rate at outlets from 3.0 to 5.0
         
         // Use simplified outlet flow calculation: portion of water leaves each time step
-        double outletVolume = outletDepth * cellArea * 0.5 * drainFactor;
+        double outletVolume = outletDepth * cellArea * 0.7 * drainFactor; // Increase from 0.5 to 0.7
         h[outlet_idx] -= outletVolume / cellArea;
         
         // Ensure we don't go negative
@@ -1222,22 +1253,31 @@ void SimulationEngine::routeWaterToOutlets()
             h[outlet_idx] = 0.0;
         }
         
+        // Log drainage volumes when they occur
+        qDebug() << "Draining at outlet (" << row << "," << col << "): " << outletVolume 
+                 << " m³, remaining depth: " << h[outlet_idx];
+        
         // Track per-outlet drainage
         QPoint outletPoint(row, col);
         perOutletDrainage[outletPoint] += outletVolume;
         outflowVolume += outletVolume;
         
         // Make sure outlet is in active cells list for next iteration
-        if (h[outlet_idx] > min_depth && !isActive[outlet_idx])
+        if (h[outlet_idx] > min_depth)
         {
             isActive[outlet_idx] = 1;
-            // We'll add to activeCells later when we sort
-            nextActiveCells.push_back(outlet_idx);
+            if (std::find(nextActiveCells.begin(), nextActiveCells.end(), outlet_idx) == nextActiveCells.end()) {
+                nextActiveCells.push_back(outlet_idx);
+            }
         }
     }
     
     // Update total drainage
     drainageVolume += outflowVolume;
+    
+    if (outflowVolume > 0) {
+        qDebug() << "Total drainage this step: " << outflowVolume << " m³, cumulative: " << drainageVolume << " m³";
+    }
     
     // Record drainage time series data
     drainageTimeSeries.append(qMakePair(time, drainageVolume));
