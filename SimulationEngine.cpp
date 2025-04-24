@@ -536,9 +536,12 @@ void SimulationEngine::computeOutletCellsByPercentile(double percentile)
 
     // Determine the number of outlets based on percentile
     int numOutlets = std::max(1, (int)(percentile * boundaryCells.size()));
-    // Ensure at least one outlet, but cap at a reasonable number (e.g., 10% of boundary, or 50)
-    numOutlets = std::min({numOutlets, (int)(boundaryCells.size() * 0.1), 50}); 
-    numOutlets = std::max(1, numOutlets); // Ensure at least one
+    
+    // Ensure at least one outlet, but cap at a reasonable number
+    // Use multiple std::min calls instead of initializer list to avoid ambiguity
+    int cap1 = std::min(numOutlets, (int)(boundaryCells.size() * 0.1));
+    int cap2 = std::min(cap1, 50);
+    numOutlets = std::max(1, cap2);
 
     qDebug() << "Selecting top" << numOutlets << "lowest boundary cells as automatic outlets.";
 
@@ -549,9 +552,6 @@ void SimulationEngine::computeOutletCellsByPercentile(double percentile)
         int j = boundaryCells[k].second % ny;
         qDebug() << "Added automatic outlet at:" << i << j << "with elevation:" << boundaryCells[k].first;
     }
-
-    // Optional: Ensure some minimum spacing between outlets if they are too clustered?
-    // (Could be added later if needed)
 
     qDebug() << "Selected" << outletCells.size() << "automatic outlet cells along boundary.";
 }
@@ -631,7 +631,7 @@ void SimulationEngine::stepSimulation()
 
     // Skip if all zero water depth
     bool allZero = true;
-    for (size_t i = 0; i < h.size(); i++) 
+    for (int i = 0; i < (int)h.size(); i++) 
     {
         if (h[i] > 0.0) 
         {
@@ -681,7 +681,7 @@ void SimulationEngine::stepSimulation()
 
     // Apply rainfall/infiltration only to active cells or cells that might get wet
     #pragma omp parallel for
-    for (size_t a = 0; a < activeCells.size(); a++) 
+    for (int a = 0; a < (int)activeCells.size(); a++) 
     {
         int idx = activeCells[a];
         // Apply rainfall to the cell
@@ -690,7 +690,7 @@ void SimulationEngine::stepSimulation()
         if (useTimeVaryingRainfall && timeVaryingRainfall.size() > 0) 
         {
             // Find appropriate time slot
-            for (size_t i = 0; i < timeVaryingRainfall.size(); i++) 
+            for (int i = 0; i < (int)timeVaryingRainfall.size(); i++) 
             {
                 if (time >= timeVaryingRainfall[i].first) 
                 {
@@ -717,7 +717,7 @@ void SimulationEngine::stepSimulation()
     
     // Calculate outflows for each active cell
     int active_count = 0;
-    for (size_t a = 0; a < activeCells.size(); a++) 
+    for (int a = 0; a < (int)activeCells.size(); a++) 
     {
         int k = activeCells[a];
         if (h[k] <= min_depth) 
@@ -774,7 +774,7 @@ void SimulationEngine::stepSimulation()
                 double ratio = maxOutVolume / totalOutVolume;
                 
                 // Scale all outflows for this cell
-                for (size_t o = 0; o < outflows.size(); o++) 
+                for (int o = 0; o < (int)outflows.size(); o++) 
                 {
                     outflows[o].second *= ratio;
                 }
@@ -788,7 +788,7 @@ void SimulationEngine::stepSimulation()
             }
             
             // Update delta_h for receiving cells
-            for (size_t o = 0; o < outflows.size(); o++) 
+            for (int o = 0; o < (int)outflows.size(); o++) 
             {
                 int nb_idx = outflows[o].first;
                 double flow = outflows[o].second;
@@ -1147,7 +1147,7 @@ QVector<QPoint> SimulationEngine::getAutomaticOutletCells() const
     QVector<QPoint> result;
     
     // Convert 1D indices back to 2D coordinates
-    for (size_t i = 0; i < outletCells.size(); i++)
+    for (int i = 0; i < (int)outletCells.size(); i++)
     {
         int idx = outletCells[i];
         int row = idx / ny;  // row
@@ -1174,7 +1174,7 @@ void SimulationEngine::routeWaterToOutlets()
     double outflowVolume = 0.0;
     
     // Process outlet cells only
-    for (size_t i = 0; i < outletCells.size(); i++)
+    for (int i = 0; i < (int)outletCells.size(); i++)
     {
         int outlet_idx = outletCells[i];
         int row = outlet_idx / ny;
@@ -1231,7 +1231,9 @@ void SimulationEngine::routeWaterToOutlets()
 QImage SimulationEngine::getFlowAccumulationImage() const
 {
     if (nx <= 0 || ny <= 0 || flowAccumulationGrid.empty())
+    {
         return QImage();
+    }
 
     // Create an image with dimensions matching the DEM grid
     QImage img(ny, nx, QImage::Format_RGB32);
@@ -1239,10 +1241,13 @@ QImage SimulationEngine::getFlowAccumulationImage() const
 
     // Find the max flow accumulation value for scaling
     double maxFlow = 0.0;
-    for (int i = 0; i < nx; i++) {
-        for (int j = 0; j < ny; j++) {
+    for (int i = 0; i < nx; i++) 
+    {
+        for (int j = 0; j < ny; j++) 
+        {
             int k = idx(i, j);
-            if (dem[k] > -999998.0) {
+            if (dem[k] > -999998.0) 
+            {
                 maxFlow = std::max(maxFlow, flowAccumulationGrid[k]);
             }
         }
@@ -1252,10 +1257,13 @@ QImage SimulationEngine::getFlowAccumulationImage() const
     maxFlow = std::log(maxFlow + 1.0);
     
     // Create a color gradient to visualize flow paths
-    for (int i = 0; i < nx; i++) {
-        for (int j = 0; j < ny; j++) {
+    for (int i = 0; i < nx; i++) 
+    {
+        for (int j = 0; j < ny; j++) 
+        {
             int k = idx(i, j);
-            if (dem[k] <= -999998.0) {
+            if (dem[k] <= -999998.0) 
+            {
                 // No-data cells are light gray
                 img.setPixel(j, i, qRgb(200, 200, 200));
                 continue;
@@ -1268,33 +1276,38 @@ QImage SimulationEngine::getFlowAccumulationImage() const
                 std::log(flowValue + 1.0) / maxFlow : 0.0;
             
             // Create a blue gradient for flow paths
-            int blue = int(255 * normalizedFlow);
-            int green = int(150 * normalizedFlow);
+            int blue = static_cast<int>(255 * normalizedFlow);
+            int green = static_cast<int>(150 * normalizedFlow);
             int red = 50;
             
             // Add terrain coloring for context
-            if (normalizedFlow < 0.2) {
+            if (normalizedFlow < 0.2) 
+            {
                 // For low flow areas, use terrain coloring (green to brown gradient)
                 double normalizedElev = (dem[k] - dem[idx(outletRow,j)]) / 10.0;
                 normalizedElev = std::max(0.0, std::min(1.0, normalizedElev));
                 
-                red = int(155 + 100 * normalizedElev);
-                green = int(200 - 60 * normalizedElev);
-                blue = int(50 + 40 * normalizedElev);
+                red = static_cast<int>(155 + 100 * normalizedElev);
+                green = static_cast<int>(200 - 60 * normalizedElev);
+                blue = static_cast<int>(50 + 40 * normalizedElev);
             }
             
             // Mark outlet cells with a distinctive color
             bool isOutlet = false;
-            for (const auto& cell_idx : outletCells) {
+            for (int c = 0; c < (int)outletCells.size(); c++) 
+            {
+                int cell_idx = outletCells[c];
                 int oi = cell_idx / ny;
                 int oj = cell_idx % ny;
-                if (i == oi && j == oj) {
+                if (i == oi && j == oj) 
+                {
                     isOutlet = true;
                     break;
                 }
             }
             
-            if (isOutlet) {
+            if (isOutlet) 
+            {
                 red = 255;
                 green = 50;
                 blue = 50;
@@ -1305,7 +1318,8 @@ QImage SimulationEngine::getFlowAccumulationImage() const
     }
 
     // Draw gridlines similar to the DEM preview
-    if (showGrid) {
+    if (showGrid) 
+    {
         QPainter painter(&img);
         
         // Use lighter, more subtle grid lines
@@ -1313,17 +1327,20 @@ QImage SimulationEngine::getFlowAccumulationImage() const
         
         // Adjust grid interval based on resolution
         int interval = gridInterval;
-        if (resolution > 5.0) {
+        if (resolution > 5.0) 
+        {
             interval = std::max(1, gridInterval / 2);
         }
         
         // Draw horizontal gridlines
-        for (int i = 0; i <= nx; i += interval) {
+        for (int i = 0; i <= nx; i += interval) 
+        {
             painter.drawLine(0, i, ny, i);
         }
         
         // Draw vertical gridlines
-        for (int j = 0; j <= ny; j += interval) {
+        for (int j = 0; j <= ny; j += interval) 
+        {
             painter.drawLine(j, 0, j, nx);
         }
     }
@@ -1336,11 +1353,12 @@ QImage SimulationEngine::getFlowAccumulationImage() const
     int legendY = 10;
     
     // Draw flow accumulation color bar
-    for (int y = 0; y < legendHeight; y++) {
-        double normalizedFlow = 1.0 - double(y) / legendHeight; // 1 at top, 0 at bottom
+    for (int y = 0; y < legendHeight; y++) 
+    {
+        double normalizedFlow = 1.0 - static_cast<double>(y) / legendHeight; // 1 at top, 0 at bottom
         
-        int blue = int(255 * normalizedFlow);
-        int green = int(150 * normalizedFlow);
+        int blue = static_cast<int>(255 * normalizedFlow);
+        int green = static_cast<int>(150 * normalizedFlow);
         int red = 50;
         
         painter.setPen(QColor(red, green, blue));
@@ -1398,16 +1416,5 @@ int SimulationEngine::getLowestNeighborIdx(int i, int j) const
     }
     
     return lowestIdx;
-}
-
-// Helper method to check if cell coordinates are valid
-bool SimulationEngine::isValidCell(int i, int j) const
-{
-    return (i >= 0 && i < nx && j >= 0 && j < ny);
-}
-
-inline int SimulationEngine::idx(int i, int j) const
-{
-    return i * ny + j;
 }
 
