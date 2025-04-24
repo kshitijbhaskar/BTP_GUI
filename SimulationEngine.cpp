@@ -387,40 +387,47 @@ void SimulationEngine::setManualOutletCells(const QVector<QPoint> &cells)
 bool SimulationEngine::initSimulation()
 {
     // Make basic validation checks
-    if (nx <= 0 || ny <= 0) {
+    if (nx <= 0 || ny <= 0)
+    {
         qDebug() << "ERROR: Cannot initialize simulation - invalid grid dimensions:" << nx << "x" << ny;
         return false;
     }
     
     // Create grid with current dimensions if necessary
-    if (dem.empty() || h.empty() || h.size() != nx * ny || neighbors.empty()) {
+    if (dem.empty() || h.empty() || h.size() != nx * ny || neighbors.empty())
+    {
         createGrid(nx, ny, resolution);
     }
     
     // Check if we have any valid outlet cells
-    if (outletCells.empty()) {
+    if (outletCells.empty())
+    {
         qDebug() << "WARNING: No outlet cells defined. Attempting to compute default outlets.";
         computeDefaultAutomaticOutletCells();
         
         // Check again after attempting to compute default outlets
-        if (outletCells.empty()) {
+        if (outletCells.empty())
+        {
             qDebug() << "ERROR: Still no outlet cells after computing defaults. Cannot initialize simulation.";
             return false;
         }
     }
     
     // Validate simulation parameters
-    if (resolution <= 0) {
+    if (resolution <= 0)
+    {
         qDebug() << "ERROR: Invalid cell resolution:" << resolution;
         return false;
     }
     
-    if (n_manning <= 0) {
+    if (n_manning <= 0)
+    {
         qDebug() << "ERROR: Invalid Manning coefficient:" << n_manning;
         return false;
     }
     
-    if (totalTime <= 0) {
+    if (totalTime <= 0)
+    {
         qDebug() << "ERROR: Invalid total simulation time:" << totalTime;
         return false;
     }
@@ -448,20 +455,28 @@ bool SimulationEngine::initSimulation()
     perOutletDrainage.clear();
     
     // Setup time-varying rainfall data
-    if (useTimeVaryingRainfall && timeVaryingRainfall.isEmpty()) {
+    if (useTimeVaryingRainfall && timeVaryingRainfall.isEmpty())
+    {
         timeVaryingRainfall.append(qMakePair(0.0, rainfallRate * 3600.0)); // Convert to mm/hr for storage
     }
     
     // Initialize per-outlet drainage tracking for all outlet cells
-    if (useManualOutlets) {
+    if (useManualOutlets)
+    {
         qDebug() << "Using" << manualOutletCells.size() << "manual outlet cells";
-        for (const QPoint &p : manualOutletCells) {
+        for (int i = 0; i < manualOutletCells.size(); i++)
+        {
+            const QPoint &p = manualOutletCells[i];
             perOutletDrainage[p] = 0.0;
         }
-    } else {
+    }
+    else
+    {
         qDebug() << "Using" << outletCells.size() << "automatic outlet cells";
         QVector<QPoint> autoOutlets = getAutomaticOutletCells();
-        for (const QPoint &p : autoOutlets) {
+        for (int i = 0; i < autoOutlets.size(); i++)
+        {
+            const QPoint &p = autoOutlets[i];
             perOutletDrainage[p] = 0.0;
         }
     }
@@ -553,36 +568,49 @@ void SimulationEngine::setRainfallSchedule(const QVector<QPair<double, double>>&
     
     // Copy and sort the schedule by timestamp
     timeVaryingRainfall = schedule;
-    std::sort(timeVaryingRainfall.begin(), timeVaryingRainfall.end(), 
-              [](const QPair<double, double>& a, const QPair<double, double>& b) {
-                  return a.first < b.first;
-              });
+    
+    // Sort using a lambda function
+    if (timeVaryingRainfall.size() > 1)
+    {
+        std::sort(timeVaryingRainfall.begin(), timeVaryingRainfall.end(), 
+                  [](const QPair<double, double>& a, const QPair<double, double>& b) -> bool
+                  {
+                      return a.first < b.first;
+                  });
+    }
     
     // Ensure first entry is at time 0
-    if (!timeVaryingRainfall.isEmpty() && timeVaryingRainfall.first().first > 0) {
-        timeVaryingRainfall.prepend(qMakePair(0.0, timeVaryingRainfall.first().second));
+    if (!timeVaryingRainfall.isEmpty() && timeVaryingRainfall.first().first > 0.0)
+    {
+        QPair<double, double> firstEntry = qMakePair(0.0, timeVaryingRainfall.first().second);
+        timeVaryingRainfall.prepend(firstEntry);
     }
     
     // If schedule is empty, add a single entry with the current constant rate
-    if (timeVaryingRainfall.isEmpty()) {
-        timeVaryingRainfall.append(qMakePair(0.0, rainfallRate));
+    if (timeVaryingRainfall.isEmpty())
+    {
+        QPair<double, double> defaultEntry = qMakePair(0.0, rainfallRate);
+        timeVaryingRainfall.append(defaultEntry);
     }
 }
 
 double SimulationEngine::getCurrentRainfallRate() const
 {
-    if (!useTimeVaryingRainfall || timeVaryingRainfall.isEmpty()) {
+    if (!useTimeVaryingRainfall || timeVaryingRainfall.isEmpty())
+    {
         return rainfallRate; // Fall back to constant rate
     }
     
     // Find the applicable rainfall rate for the current time
     double currentRate = timeVaryingRainfall.first().second; // Default to first rate
     
-    for (int i = 0; i < timeVaryingRainfall.size(); i++) {
+    for (int i = 0; i < timeVaryingRainfall.size(); i++)
+    {
         const QPair<double, double>& entry = timeVaryingRainfall[i];
         
         // If this entry's time is in the future, use the previous entry's rate
-        if (entry.first > time) {
+        if (entry.first > time)
+        {
             break;
         }
         
@@ -595,24 +623,34 @@ double SimulationEngine::getCurrentRainfallRate() const
 
 void SimulationEngine::stepSimulation()
 {
-    if (dem.empty() || h.empty()) return;
+    // Basic validation
+    if (dem.empty() || h.empty()) 
+    {
+        return;
+    }
 
     // Skip if all zero water depth
     bool allZero = true;
-    for (const double& d : h) {
-        if (d > 0.0) {
+    for (size_t i = 0; i < h.size(); i++) 
+    {
+        if (h[i] > 0.0) 
+        {
             allZero = false;
             break;
         }
     }
 
     // Check if we need to initialize active cells
-    if (activeCells.empty() && !allZero) {
+    if (activeCells.empty() && !allZero) 
+    {
         // Initialize active cells for first time
-        for (int i = 0; i < nx; ++i) {
-            for (int j = 0; j < ny; ++j) {
+        for (int i = 0; i < nx; i++) 
+        {
+            for (int j = 0; j < ny; j++) 
+            {
                 int k = idx(i, j);
-                if (h[k] > min_depth) {
+                if (h[k] > min_depth) 
+                {
                     activeCells.push_back(k);
                     isActive[k] = 1;
                 }
@@ -624,7 +662,10 @@ void SimulationEngine::stepSimulation()
     }
 
     // Return if nothing is active
-    if (activeCells.empty() && allZero && rainfallRate <= 0 && !useTimeVaryingRainfall) return;
+    if (activeCells.empty() && allZero && rainfallRate <= 0 && !useTimeVaryingRainfall) 
+    {
+        return;
+    }
 
     // For mass conservation tracking
     double cellArea = resolution * resolution;
@@ -640,16 +681,23 @@ void SimulationEngine::stepSimulation()
 
     // Apply rainfall/infiltration only to active cells or cells that might get wet
     #pragma omp parallel for
-    for (int idx : activeCells) {
+    for (size_t a = 0; a < activeCells.size(); a++) 
+    {
+        int idx = activeCells[a];
         // Apply rainfall to the cell
         double rRate = rainfallRate;
         
-        if (useTimeVaryingRainfall && timeVaryingRainfall.size() > 0) {
+        if (useTimeVaryingRainfall && timeVaryingRainfall.size() > 0) 
+        {
             // Find appropriate time slot
-            for (size_t i = 0; i < timeVaryingRainfall.size(); i++) {
-                if (time >= timeVaryingRainfall[i].first) {
+            for (size_t i = 0; i < timeVaryingRainfall.size(); i++) 
+            {
+                if (time >= timeVaryingRainfall[i].first) 
+                {
                     rRate = timeVaryingRainfall[i].second / 3600.0; // Convert from mm/hr to m/s
-                } else {
+                } 
+                else 
+                {
                     break;
                 }
             }
@@ -663,29 +711,43 @@ void SimulationEngine::stepSimulation()
         h[idx] -= infiltration;
         
         // Track total water in system for mass conservation
+        #pragma omp atomic
         totalSystemWater += h[idx] * cellArea;
     }
     
     // Calculate outflows for each active cell
     int active_count = 0;
-    for (int k : activeCells) {
-        if (h[k] <= min_depth) continue; // Skip cells with minimal water
+    for (size_t a = 0; a < activeCells.size(); a++) 
+    {
+        int k = activeCells[a];
+        if (h[k] <= min_depth) 
+        {
+            continue; // Skip cells with minimal water
+        }
 
         double total_out = 0.0;
         
         // Vector to store outflows to each direction
         std::vector<std::pair<int, double>> outflows;
+        outflows.reserve(4); // Maximum of 4 outflows (4 neighbors)
         
         // Manning's formula: Q = (1/n) * A * R^(2/3) * S^(1/2)
         // For shallow water, R ~= h, A ~= h * width
         
         // Calculate outflows in 4 directions using precomputed neighbors
-        for (int dir = 0; dir < 4; ++dir) {
+        for (int dir = 0; dir < 4; dir++) 
+        {
             int nb_idx = neighbors[k][dir];
-            if (nb_idx < 0) continue; // Skip invalid neighbors
+            if (nb_idx < 0) 
+            {
+                continue; // Skip invalid neighbors
+            }
             
             double h_diff = (dem[k] + h[k]) - (dem[nb_idx] + h[nb_idx]);
-            if (h_diff <= 0) continue; // Skip if water doesn't flow this way
+            if (h_diff <= 0) 
+            {
+                continue; // Skip if water doesn't flow this way
+            }
             
             double slope = h_diff / resolution;
             double Q = (1.0 / n_manning) * h[k] * pow(h[k], 2.0/3.0) * sqrt(slope) * resolution;
@@ -694,21 +756,27 @@ void SimulationEngine::stepSimulation()
             double h_local_max = h[k] * cellArea / (resolution * dt);
             Q = std::min(Q, h_local_max);
             
-            outflows.push_back(std::make_pair(nb_idx, Q));
+            std::pair<int, double> outflow_pair;
+            outflow_pair.first = nb_idx;
+            outflow_pair.second = Q;
+            outflows.push_back(outflow_pair);
             total_out += Q;
         }
         
         // Mass conservation scaling for this cell's outflows
-        if (total_out > 0) {
+        if (total_out > 0) 
+        {
             double maxOutVolume = h[k] * cellArea;
             double totalOutVolume = total_out * dt;
             
-            if (totalOutVolume > maxOutVolume) {
+            if (totalOutVolume > maxOutVolume) 
+            {
                 double ratio = maxOutVolume / totalOutVolume;
                 
                 // Scale all outflows for this cell
-                for (auto& outflow : outflows) {
-                    outflow.second *= ratio;
+                for (size_t o = 0; o < outflows.size(); o++) 
+                {
+                    outflows[o].second *= ratio;
                 }
                 total_out = maxOutVolume / dt;
             }
@@ -720,9 +788,10 @@ void SimulationEngine::stepSimulation()
             }
             
             // Update delta_h for receiving cells
-            for (const auto& outflow : outflows) {
-                int nb_idx = outflow.first;
-                double flow = outflow.second;
+            for (size_t o = 0; o < outflows.size(); o++) 
+            {
+                int nb_idx = outflows[o].first;
+                double flow = outflows[o].second;
                 
                 #pragma omp critical
                 {
@@ -738,37 +807,48 @@ void SimulationEngine::stepSimulation()
     // Update water depths and mark active cells for next iteration
     nextActiveCells.clear();
     
-    for (const auto& pair : delta_h) {
-        int idx = pair.first;
-        double dh = pair.second;
+    // Use iterator-based loop for the map to avoid any structured binding issues
+    for (std::unordered_map<int, double>::iterator it = delta_h.begin(); it != delta_h.end(); ++it) 
+    {
+        int idx = it->first;
+        double dh = it->second;
         
         h[idx] += dh;
         
         // Only mark as active if it has significant water
-        if (h[idx] > min_depth) {
+        if (h[idx] > min_depth) 
+        {
             isActive[idx] = 1;
             nextActiveCells.push_back(idx);
             
             // Also check neighbors for next step
-            for (int dir = 0; dir < 4; ++dir) {
+            for (int dir = 0; dir < 4; dir++) 
+            {
                 int nb_idx = neighbors[idx][dir];
-                if (nb_idx >= 0 && !isActive[nb_idx]) {
+                if (nb_idx >= 0 && !isActive[nb_idx]) 
+                {
                     isActive[nb_idx] = 1;
                     nextActiveCells.push_back(nb_idx);
                 }
             }
-        } else {
+        } 
+        else 
+        {
             h[idx] = 0.0; // Reset to exactly zero
             isActive[idx] = 0;
         }
     }
     
     // Search for new active cells that might appear due to rainfall
-    if (rainfallRate > 0 || useTimeVaryingRainfall) {
-        for (int i = 0; i < nx; ++i) {
-            for (int j = 0; j < ny; ++j) {
+    if (rainfallRate > 0 || useTimeVaryingRainfall) 
+    {
+        for (int i = 0; i < nx; i++) 
+        {
+            for (int j = 0; j < ny; j++) 
+            {
                 int k = idx(i, j);
-                if (!isActive[k] && h[k] > min_depth) {
+                if (!isActive[k] && h[k] > min_depth) 
+                {
                     isActive[k] = 1;
                     nextActiveCells.push_back(k);
                 }
@@ -794,10 +874,13 @@ void SimulationEngine::stepSimulation()
     // Emit progress signal every 5 steps
     static int step_count = 0;
     step_count++;
-    if (step_count >= 5) {
+    if (step_count >= 5) 
+    {
         step_count = 0;
         QDateTime currentTime = QDateTime::currentDateTime();
-        if (lastUpdateTime.msecsTo(currentTime) > 50) { // Update at most every 50ms
+        if (lastUpdateTime.msecsTo(currentTime) > 50) 
+        { 
+            // Update at most every 50ms
             emit simulationUpdated();
             emit simulationStepCompleted(getWaterDepthImage());
             lastUpdateTime = currentTime;
@@ -818,22 +901,29 @@ QVector<QPair<double, double>> SimulationEngine::getDrainageTimeSeries() const
 QImage SimulationEngine::getWaterDepthImage() const
 {
     if (nx <= 0 || ny <= 0)
+    {
         return QImage();
+    }
 
     // Create image
     QImage img(ny, nx, QImage::Format_ARGB32);
     img.fill(Qt::transparent);
 
-    // Create scanlines for direct pixel manipulation (faster than setPixel)
-    for (int i = 0; i < nx; i++) {
-        for (int j = 0; j < ny; j++) {
+    // Draw water depths
+    for (int i = 0; i < nx; i++)
+    {
+        for (int j = 0; j < ny; j++)
+        {
             int k = idx(i, j);
             
             // Skip invalid cells
-            if (i < 0 || i >= nx || j < 0 || j >= ny || h.empty()) 
+            if (i < 0 || i >= nx || j < 0 || j >= ny || h.empty())
+            {
                 continue;
+            }
             
-            if (h[k] > min_depth) {
+            if (h[k] > min_depth)
+            {
                 // Scale water depth to blue intensity
                 // Use a logarithmic scale to better show small water depths
                 double depthValue = std::min(1.0, log10(1.0 + h[k] * 100.0) / 2.0);
@@ -1057,12 +1147,15 @@ QVector<QPoint> SimulationEngine::getAutomaticOutletCells() const
     QVector<QPoint> result;
     
     // Convert 1D indices back to 2D coordinates
-    for (const auto& idx : outletCells) {
-        int i = idx / ny;  // row
-        int j = idx % ny;  // column
+    for (size_t i = 0; i < outletCells.size(); i++)
+    {
+        int idx = outletCells[i];
+        int row = idx / ny;  // row
+        int col = idx % ny;  // column
         
-        if (i >= 0 && i < nx && j >= 0 && j < ny) {
-            result.append(QPoint(i, j));
+        if (row >= 0 && row < nx && col >= 0 && col < ny)
+        {
+            result.append(QPoint(row, col));
         }
     }
     
@@ -1072,21 +1165,32 @@ QVector<QPoint> SimulationEngine::getAutomaticOutletCells() const
 
 void SimulationEngine::routeWaterToOutlets()
 {
-    if (dem.empty() || h.empty() || activeCells.empty()) return;
+    if (dem.empty() || h.empty() || activeCells.empty())
+    {
+        return;
+    }
 
     double cellArea = resolution * resolution;
     double outflowVolume = 0.0;
     
     // Process outlet cells only
-    for (int outlet_idx : outletCells) {
-        int i = outlet_idx / ny;
-        int j = outlet_idx % ny;
+    for (size_t i = 0; i < outletCells.size(); i++)
+    {
+        int outlet_idx = outletCells[i];
+        int row = outlet_idx / ny;
+        int col = outlet_idx % ny;
         
         // Skip invalid cells
-        if (!isValidCell(i, j)) continue;
+        if (row < 0 || row >= nx || col < 0 || col >= ny)
+        {
+            continue;
+        }
         
         // Skip cells with no water
-        if (h[outlet_idx] <= min_depth) continue;
+        if (h[outlet_idx] <= min_depth)
+        {
+            continue;
+        }
         
         // Calculate outlet flow - use a higher coefficient for outlets to encourage drainage
         double outletDepth = h[outlet_idx];
@@ -1097,18 +1201,20 @@ void SimulationEngine::routeWaterToOutlets()
         h[outlet_idx] -= outletVolume / cellArea;
         
         // Ensure we don't go negative
-        if (h[outlet_idx] < 0.0) {
+        if (h[outlet_idx] < 0.0)
+        {
             outletVolume += h[outlet_idx] * cellArea;
             h[outlet_idx] = 0.0;
         }
         
         // Track per-outlet drainage
-        QPoint outletPoint(i, j);
+        QPoint outletPoint(row, col);
         perOutletDrainage[outletPoint] += outletVolume;
         outflowVolume += outletVolume;
         
         // Make sure outlet is in active cells list for next iteration
-        if (h[outlet_idx] > min_depth && !isActive[outlet_idx]) {
+        if (h[outlet_idx] > min_depth && !isActive[outlet_idx])
+        {
             isActive[outlet_idx] = 1;
             // We'll add to activeCells later when we sort
             nextActiveCells.push_back(outlet_idx);
