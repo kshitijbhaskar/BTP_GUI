@@ -685,8 +685,8 @@ void SimulationEngine::stepSimulation()
     double timeFactor = 0.7 + 0.3 * timeProgress; 
     drainageFactor *= timeFactor;
     
-    for (const auto& idx : outletCells) {
-        int i = idx / ny; int j = idx % ny;
+    for (const auto& cell_idx : outletCells) {
+        int i = cell_idx / ny; int j = cell_idx % ny;
         int k = idx(i, j);
         if (i >= 0 && i < nx && j >= 0 && j < ny && dem[k] > -999998.0) {
             totalWaterOnOutlets += h[k] * cellArea;
@@ -1184,12 +1184,13 @@ void SimulationEngine::routeWaterToOutlets()
     flowAccumulationGrid = flowAccumulation;
     
     // For each outlet cell, create a path of increased water depth leading to it
-    for (const auto& idx : outletCells) {
-        int i = idx / ny;  // row
-        int j = idx % ny;  // column
+    for (const auto& cell_idx : outletCells) {
+        int i = cell_idx / ny;  // row
+        int j = cell_idx % ny;  // column
         
         // Make sure coordinates are valid
-        if (i < 0 || i >= nx || j < 0 || j >= ny || dem[idx(i,j)] <= -999998.0)
+        int k = idx(i, j);
+        if (i < 0 || i >= nx || j < 0 || j >= ny || dem[k] <= -999998.0)
             continue;
             
         // Find multiple paths from the outlet toward higher accumulation areas
@@ -1228,7 +1229,8 @@ void SimulationEngine::routeWaterToOutlets()
 
             // Keep track of cells already in this path to avoid loops
             std::set<int> pathCellIndices;
-            pathCellIndices.insert(idx(currentI, currentJ));
+            int initial_idx = idx(currentI, currentJ);
+            pathCellIndices.insert(initial_idx);
 
             for (int step = 0; step < pathLength; step++) {
                 // Find the best next cell to include in the path (highest flow accumulation)
@@ -1260,13 +1262,13 @@ void SimulationEngine::routeWaterToOutlets()
                     
                     // Calculate a score based on flow accumulation and elevation
                     // Prefer cells that: 1) have high flow accumulation, 2) are uphill
-                    double flowScore = flowAccumulation[cellIndex] * 0.7; // Increased weight for flow accumulation
-                    double elevScore = std::max(0.0, dem[cellIndex] - dem[idx]) * 1.5;
+                    double flowScore = flowAccumulation[cellIndex] * 0.7; 
+                    double elevScore = std::max(0.0, dem[cellIndex] - dem[k]) * 1.5;
                     double upstreamScore = (ni < i) ? 2.5 : 0.0; // Prefer upstream cells
                     
                     // New: Add a penalty for flat areas to help guide water through depressions
                     double flatPenalty = 0.0;
-                    if (std::abs(dem[cellIndex] - dem[idx]) < 0.01) {
+                    if (std::abs(dem[cellIndex] - dem[k]) < 0.01) {
                         flatPenalty = -1.0; // Penalty for flat areas
                     }
                     
@@ -1353,9 +1355,9 @@ QImage SimulationEngine::getFlowAccumulationImage() const
             
             // Mark outlet cells with a distinctive color
             bool isOutlet = false;
-            for (const auto& idx : outletCells) {
-                int oi = idx / ny;
-                int oj = idx % ny;
+            for (const auto& cell_idx : outletCells) {
+                int oi = cell_idx / ny;
+                int oj = cell_idx % ny;
                 if (i == oi && j == oj) {
                     isOutlet = true;
                     break;
