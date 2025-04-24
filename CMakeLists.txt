@@ -9,19 +9,20 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Enable OpenMP support
-find_package(OpenMP)
-if(OpenMP_CXX_FOUND)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-    message(STATUS "OpenMP found and enabled")
-else()
-    message(WARNING "OpenMP not found. Multithreading optimizations will be disabled.")
-endif()
-
-# Add flags specific to MSVC for OpenMP
+# Basic OpenMP support (simplified for compatibility)
 if(MSVC)
+    # MSVC doesn't support 'collapse' clause, so we only enable basic OpenMP
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /openmp")
-    message(STATUS "Added /openmp flag for MSVC")
+    message(STATUS "Added /openmp flag for MSVC (note: collapse clause not supported)")
+else()
+    # For GCC/Clang
+    find_package(OpenMP)
+    if(OpenMP_CXX_FOUND)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+        message(STATUS "OpenMP found and enabled")
+    else()
+        message(WARNING "OpenMP not found. Multithreading optimizations will be disabled.")
+    endif()
 endif()
 
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets LinguistTools)
@@ -97,8 +98,8 @@ target_link_libraries(BTP_GUI PRIVATE
     ${GDAL_LIBRARY_CLEAN}
 )
 
-# Link with OpenMP if found
-if(OpenMP_CXX_FOUND)
+# Link with OpenMP if found (for non-MSVC compilers only)
+if(NOT MSVC AND OpenMP_CXX_FOUND)
     target_link_libraries(BTP_GUI PRIVATE OpenMP::OpenMP_CXX)
 endif()
 

@@ -549,7 +549,7 @@ void SimulationEngine::stepSimulation()
     }
 
     // Apply rainfall and infiltration to each cell
-    #pragma omp parallel for collapse(2) schedule(static)
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
             int k = idx(i, j);
@@ -566,7 +566,7 @@ void SimulationEngine::stepSimulation()
     // Calculate total system water *after* rainfall/infiltration
     double totalSystemWater = 0.0;
     double cellArea = resolution * resolution;
-    #pragma omp parallel for collapse(2) reduction(+:totalSystemWater) schedule(static)
+    #pragma omp parallel for reduction(+:totalSystemWater) schedule(static)
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
             int k = idx(i, j);
@@ -584,7 +584,7 @@ void SimulationEngine::stepSimulation()
     int dj[4] = {0, 1, 0, -1};
 
     // First pass: Calculate potential outflow Q_out
-    #pragma omp parallel for collapse(2) schedule(static)
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
             int k = idx(i, j);
@@ -618,7 +618,7 @@ void SimulationEngine::stepSimulation()
     // Second pass: Calculate delta_h using mass conservation scaling
     std::vector<double> delta_h(nx * ny, 0.0);
 
-    #pragma omp parallel for collapse(2) schedule(static)
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
             int k = idx(i, j);
@@ -658,7 +658,7 @@ void SimulationEngine::stepSimulation()
     }
 
     // Third pass: Update water depths
-    #pragma omp parallel for collapse(2) schedule(static)
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
             int k = idx(i, j);
@@ -1061,10 +1061,10 @@ void SimulationEngine::routeWaterToOutlets()
     qDebug() << "Routing water to" << outletCells.size() << "outlet cells";
     
     // Create a flow accumulation grid to identify main drainage paths
-    std::vector<std::vector<double>> flowAccumulation(nx, std::vector<double>(ny, 0.0));
+    std::vector<double> flowAccumulation(nx * ny, 0.0);
     
     // Depression filling - identify and fill local depressions to ensure flow continuity
-    std::vector<std::vector<double>> filledDEM = dem; // Copy original DEM
+    std::vector<double> filledDEM = dem; // Copy original DEM
     bool depressionsFilled = false;
     int fillIterations = 0;
     const int MAX_FILL_ITERATIONS = 3; // Limit iterations to avoid excessive processing
@@ -1074,8 +1074,9 @@ void SimulationEngine::routeWaterToOutlets()
         
         for (int i = 1; i < nx - 1; i++) {
             for (int j = 1; j < ny - 1; j++) {
+                int k = idx(i, j);
                 // Skip no-data cells
-                if (filledDEM[i][j] <= -999998.0) {
+                if (filledDEM[k] <= -999998.0) {
                     continue;
                 }
                 
@@ -1092,27 +1093,32 @@ void SimulationEngine::routeWaterToOutlets()
                         int nj = j + dj;
                         
                         // Skip out of bounds or no-data cells
-                        if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || filledDEM[ni][nj] <= -999998.0) {
+                        if (ni < 0 || ni >= nx || nj < 0 || nj >= ny) {
                             continue;
                         }
                         
-                        if (filledDEM[ni][nj] < filledDEM[i][j]) {
+                        int nk = idx(ni, nj);
+                        if (filledDEM[nk] <= -999998.0) {
+                            continue;
+                        }
+                        
+                        if (filledDEM[nk] < filledDEM[k]) {
                             isDepression = false;
                             break;
                         }
                         
-                        lowestNeighbor = std::min(lowestNeighbor, filledDEM[ni][nj]);
+                        lowestNeighbor = std::min(lowestNeighbor, filledDEM[nk]);
                     }
                 }
                 
                 // Fill depression by setting elevation slightly below lowest neighbor
                 if (isDepression && lowestNeighbor < std::numeric_limits<double>::max()) {
-                    double oldElev = filledDEM[i][j];
-                    filledDEM[i][j] = lowestNeighbor - 0.01; // Set slightly below lowest neighbor
+                    double oldElev = filledDEM[k];
+                    filledDEM[k] = lowestNeighbor - 0.01; // Set slightly below lowest neighbor
                     depressionsFilled = false; // Need another iteration
                     
                     if (fillIterations == 0) { // Only log on first iteration to avoid spam
-                        qDebug() << "Filled depression at" << i << j << "from" << oldElev << "to" << filledDEM[i][j];
+                        qDebug() << "Filled depression at" << i << j << "from" << oldElev << "to" << filledDEM[k];
                     }
                 }
             }
@@ -1126,8 +1132,9 @@ void SimulationEngine::routeWaterToOutlets()
     // Calculate flow directions and accumulation based on the filled DEM
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
+            int k = idx(i, j);
             // Skip no-data cells
-            if (filledDEM[i][j] <= -999998.0) {
+            if (filledDEM[k] <= -999998.0) {
                 continue;
             }
             
@@ -1137,24 +1144,29 @@ void SimulationEngine::routeWaterToOutlets()
             double maxSlope = 0.0;
             int flowDir = -1;
             
-            for (int k = 0; k < 8; k++) {
-                int ni = i + di[k];
-                int nj = j + dj[k];
+            for (int d = 0; d < 8; d++) {
+                int ni = i + di[d];
+                int nj = j + dj[d];
                 
                 // Skip if out of bounds or no-data cell
-                if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || filledDEM[ni][nj] <= -999998.0) {
+                if (ni < 0 || ni >= nx || nj < 0 || nj >= ny) {
+                    continue;
+                }
+                
+                int nk = idx(ni, nj);
+                if (filledDEM[nk] <= -999998.0) {
                     continue;
                 }
                 
                 // Calculate elevation difference and slope
-                double dElev = filledDEM[i][j] - filledDEM[ni][nj];
-                double distance = (k % 2 == 0) ? resolution : resolution * 1.414; // Adjust for diagonals
+                double dElev = filledDEM[k] - filledDEM[nk];
+                double distance = (d % 2 == 0) ? resolution : resolution * 1.414; // Adjust for diagonals
                 double slope = dElev / distance;
                 
                 // If this slope is steeper, update flow direction
                 if (slope > maxSlope) {
                     maxSlope = slope;
-                    flowDir = k;
+                    flowDir = d;
                 }
             }
             
@@ -1162,7 +1174,8 @@ void SimulationEngine::routeWaterToOutlets()
             if (flowDir >= 0) {
                 int ni = i + di[flowDir];
                 int nj = j + dj[flowDir];
-                flowAccumulation[ni][nj] += 1.0 + flowAccumulation[i][j];
+                int nk = idx(ni, nj);
+                flowAccumulation[nk] += 1.0 + flowAccumulation[k];
             }
         }
     }
@@ -1176,7 +1189,7 @@ void SimulationEngine::routeWaterToOutlets()
         int j = idx % ny;  // column
         
         // Make sure coordinates are valid
-        if (i < 0 || i >= nx || j < 0 || j >= ny || dem[idx(i,j)] <= -999998.0)
+        if (i < 0 || i >= nx || j < 0 || j >= ny || dem[idx] <= -999998.0)
             continue;
             
         // Find multiple paths from the outlet toward higher accumulation areas
@@ -1231,25 +1244,29 @@ void SimulationEngine::routeWaterToOutlets()
                     int nj = currentJ + dj[k];
                     
                     // Skip if out of bounds or no-data cell
-                    if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || dem[idx(ni,nj)] <= -999998.0) {
+                    if (ni < 0 || ni >= nx || nj < 0 || nj >= ny) {
+                        continue;
+                    }
+                    
+                    int cellIndex = idx(ni, nj);
+                    if (dem[cellIndex] <= -999998.0) {
                         continue;
                     }
                     
                     // Skip cells already in this path to avoid loops
-                    int cellIndex = ni * ny + nj;
                     if (pathCellIndices.find(cellIndex) != pathCellIndices.end()) {
                         continue;
                     }
                     
                     // Calculate a score based on flow accumulation and elevation
                     // Prefer cells that: 1) have high flow accumulation, 2) are uphill
-                    double flowScore = flowAccumulation[ni][nj] * 0.7; // Increased weight for flow accumulation
-                    double elevScore = std::max(0.0, dem[idx(ni,nj)] - dem[idx(i,j)]) * 1.5;
+                    double flowScore = flowAccumulation[cellIndex] * 0.7; // Increased weight for flow accumulation
+                    double elevScore = std::max(0.0, dem[cellIndex] - dem[idx]) * 1.5;
                     double upstreamScore = (ni < i) ? 2.5 : 0.0; // Prefer upstream cells
                     
                     // New: Add a penalty for flat areas to help guide water through depressions
                     double flatPenalty = 0.0;
-                    if (std::abs(dem[idx(ni,nj)] - dem[idx(i,j)]) < 0.01) {
+                    if (std::abs(dem[cellIndex] - dem[idx]) < 0.01) {
                         flatPenalty = -1.0; // Penalty for flat areas
                     }
                     
@@ -1270,57 +1287,12 @@ void SimulationEngine::routeWaterToOutlets()
                 currentI = nextI;
                 currentJ = nextJ;
                 paths.push_back(std::make_pair(currentI, currentJ));
-                pathCellIndices.insert(currentI * ny + currentJ);
-                
-                // Add water to the current cell - Reduced aggressiveness
-                /* // <<< COMMENT OUT START
-                double flowValue = flowAccumulation[currentI][currentJ];
-                double baseWaterAmount = min_depth * 15; // Reduced base amount from 25
-                
-                double flowMultiplier = 1.0 + std::min(1.5, flowValue / 10.0); // Reduced multiplier effect
-                double addedWater = baseWaterAmount * pathFactor * flowMultiplier;
-                
-                h[currentI][currentJ] += addedWater;
-                pathFactor *= 0.95; // Even slower decay 
-                
-                // Add water to adjacent cells - Reduced aggressiveness
-                if (flowAccumulation[currentI][currentJ] > 5.0) { // Increased threshold from 2.0
-                    for (int direction = 0; direction < 8; direction++) {
-                        int ni = currentI + di[direction];
-                        int nj = currentJ + dj[direction];
-                        
-                        if (ni >= 0 && ni < nx && nj >= 0 && nj < ny && dem[ni][nj] > -999998.0) {
-                            h[ni][nj] += addedWater * 0.5; // Reduced spread amount from 0.65
-                        }
-                    }
-                }
-                */ // <<< COMMENT OUT END
+                pathCellIndices.insert(idx(currentI, currentJ));
             }
         }
         
         // Debug path information
         qDebug() << "Created" << paths.size() << "path segments for outlet at" << i << j;
-        
-        // Ensure the outlet cell itself has sufficient water - Reduced aggressiveness
-        /* // <<< COMMENT OUT START
-        if (h[i][j] < min_depth * 10) { // Reduced from 20
-            h[i][j] = min_depth * 10; // Reduced from 20
-        }
-        */ // <<< COMMENT OUT END
-        
-        // Ensure cells immediately upstream have sufficient water - Reduced aggressiveness
-        /* // <<< COMMENT OUT START
-        for (int di = -1; di <= 0; di++) {
-            for (int dj = -1; dj <= 1; dj++) {
-                int ni = i + di;
-                int nj = j + dj;
-                
-                if (ni >= 0 && ni < nx && nj >= 0 && nj < ny && dem[ni][nj] > -999998.0) {
-                    h[ni][nj] = std::max(h[ni][nj], min_depth * 8); // Reduced from 15
-                }
-            }
-        }
-        */ // <<< COMMENT OUT END
     }
 }
 
@@ -1335,11 +1307,9 @@ QImage SimulationEngine::getFlowAccumulationImage() const
 
     // Find the max flow accumulation value for scaling
     double maxFlow = 0.0;
-    for (int i = 0; i < nx; i++) {
-        for (int j = 0; j < ny; j++) {
-            if (dem[idx(i,j)] > -999998.0) {
-                maxFlow = std::max(maxFlow, flowAccumulationGrid[i][j]);
-            }
+    for (int k = 0; k < nx * ny; k++) {
+        if (dem[k] > -999998.0) {
+            maxFlow = std::max(maxFlow, flowAccumulationGrid[k]);
         }
     }
     
@@ -1349,13 +1319,14 @@ QImage SimulationEngine::getFlowAccumulationImage() const
     // Create a color gradient to visualize flow paths
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
-            if (dem[idx(i,j)] <= -999998.0) {
+            int k = idx(i, j);
+            if (dem[k] <= -999998.0) {
                 // No-data cells are light gray
                 img.setPixel(j, i, qRgb(200, 200, 200));
                 continue;
             }
             
-            double flowValue = flowAccumulationGrid[i][j];
+            double flowValue = flowAccumulationGrid[k];
             
             // Use log scale to better visualize the full range of values
             double normalizedFlow = (flowValue > 0) ? 
@@ -1369,7 +1340,7 @@ QImage SimulationEngine::getFlowAccumulationImage() const
             // Add terrain coloring for context
             if (normalizedFlow < 0.2) {
                 // For low flow areas, use terrain coloring (green to brown gradient)
-                double normalizedElev = (dem[idx(i,j)] - dem[idx(outletRow,j)]) / 10.0;
+                double normalizedElev = (dem[k] - dem[idx(outletRow,j)]) / 10.0;
                 normalizedElev = std::max(0.0, std::min(1.0, normalizedElev));
                 
                 red = int(155 + 100 * normalizedElev);
