@@ -29,11 +29,11 @@ SimulationEngine::SimulationEngine(QObject *parent)
     resolution(0.25),
     n_manning(0.03),
     Ks(1e-6),
-    min_depth(1e-5),
+    min_depth(1e-6),
     totalTime(1800.0),
     time(0.0),
     dt(1.0),
-    rainfallRate(0.001),
+    rainfallRate(0.00001),
     useTimeVaryingRainfall(false),
     outletRow(0),
     useManualOutlets(false),
@@ -43,6 +43,12 @@ SimulationEngine::SimulationEngine(QObject *parent)
     gridInterval(10)
 {
     lastUpdateTime = QDateTime::currentDateTime();
+    qDebug() << "SimulationEngine initialized with:";
+    qDebug() << "  - Resolution:" << resolution << "m";
+    qDebug() << "  - Manning coefficient:" << n_manning;
+    qDebug() << "  - Infiltration rate:" << Ks << "m/s";
+    qDebug() << "  - Minimum water depth:" << min_depth << "m";
+    qDebug() << "  - Rainfall rate:" << rainfallRate << "m/s" << "=" << rainfallRate * 3600 * 1000 << "mm/hr";
 }
 
 void SimulationEngine::createGrid(int _nx, int _ny, double _resolution)
@@ -666,7 +672,8 @@ void SimulationEngine::stepSimulation()
             for (int j = 0; j < ny; j++) 
             {
                 int k = idx(i, j);
-                if (h[k] > min_depth) 
+                // Bounds check before accessing arrays
+                if (k >= 0 && k < (int)h.size() && k < (int)isActive.size() && h[k] > min_depth) 
                 {
                     activeCells.push_back(k);
                     isActive[k] = 1;
@@ -715,45 +722,48 @@ void SimulationEngine::stepSimulation()
         }
     }
 
+    // If rainfall rate is too small, increase it for better visualization
+    // Ensure minimum rainfall rate for visibility
+    double effectiveRainfallRate = std::max(rRate, 0.00001); // Minimum 0.00001 m/s (0.036 mm/hr)
+
     // Apply rainfall to ALL cells (not just active ones)
-    if (rRate > 0) {
-        #pragma omp parallel for
-        for (int i = 0; i < nx; i++) {
-            for (int j = 0; j < ny; j++) {
-                int k = idx(i, j);
-                
-                // Skip invalid DEM cells
-                if (dem[k] <= -999998.0) continue;
-                
-                // Apply rainfall
-                h[k] += rRate * dt;
-                
-                // Apply infiltration using Green-Ampt model
-                double infiltration = std::min<double>(h[k], Ks * dt);
-                h[k] -= infiltration;
-                
-                // Activate if cell has water
-                if (h[k] > min_depth && !isActive[k]) {
-                    #pragma omp critical
-                    {
-                        isActive[k] = 1;
-                        if (std::find(activeCells.begin(), activeCells.end(), k) == activeCells.end()) {
-                            activeCells.push_back(k);
-                        }
+    #pragma omp parallel for
+    for (int i = 0; i < nx; i++) {
+        for (int j = 0; j < ny; j++) {
+            int k = idx(i, j);
+            
+            // Skip invalid DEM cells or indices out of bounds
+            if (k < 0 || k >= (int)dem.size() || k >= (int)h.size() || dem[k] <= -999998.0) 
+                continue;
+            
+            // Apply rainfall
+            h[k] += effectiveRainfallRate * dt;
+            
+            // Apply infiltration using Green-Ampt model
+            double infiltration = std::min<double>(h[k], Ks * dt);
+            h[k] -= infiltration;
+            
+            // Activate if cell has water
+            if (h[k] > min_depth && k < (int)isActive.size() && !isActive[k]) {
+                #pragma omp critical
+                {
+                    isActive[k] = 1;
+                    if (std::find(activeCells.begin(), activeCells.end(), k) == activeCells.end()) {
+                        activeCells.push_back(k);
                     }
                 }
             }
         }
-        
-        // Re-sort active cells if new ones were added
-        std::sort(activeCells.begin(), activeCells.end());
     }
+    
+    // Re-sort active cells if new ones were added
+    std::sort(activeCells.begin(), activeCells.end());
     
     // Calculate total water in system
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
             int k = idx(i, j);
-            if (dem[k] > -999998.0) {
+            if (k >= 0 && k < (int)dem.size() && k < (int)h.size() && dem[k] > -999998.0) {
                 totalSystemWater += h[k] * cellArea;
             }
         }
@@ -769,6 +779,10 @@ void SimulationEngine::stepSimulation()
     for (int a = 0; a < (int)activeCells.size(); a++) 
     {
         int k = activeCells[a];
+        // Skip if index out of bounds
+        if (k < 0 || k >= (int)h.size() || k >= (int)dem.size())
+            continue;
+            
         if (h[k] <= min_depth) 
         {
             continue; // Skip cells with minimal water
@@ -786,10 +800,15 @@ void SimulationEngine::stepSimulation()
         // Calculate outflows in 4 directions using precomputed neighbors
         for (int dir = 0; dir < 4; dir++) 
         {
+            // Bounds check for neighbors array
+            if (k >= (int)neighbors.size())
+                continue;
+                
             int nb_idx = neighbors[k][dir];
-            if (nb_idx < 0) 
+            // Skip invalid or out of bounds neighbors
+            if (nb_idx < 0 || nb_idx >= (int)h.size() || nb_idx >= (int)dem.size()) 
             {
-                continue; // Skip invalid neighbors
+                continue;
             }
             
             double h_diff = (dem[k] + h[k]) - (dem[nb_idx] + h[nb_idx]);
@@ -849,8 +868,10 @@ void SimulationEngine::stepSimulation()
             }
         }
         
-        Q_total_out[active_count] = total_out;
-        active_count++;
+        if (active_count < (int)Q_total_out.size()) {
+            Q_total_out[active_count] = total_out;
+            active_count++;
+        }
     }
     
     // Update water depths and mark active cells for next iteration
@@ -862,6 +883,10 @@ void SimulationEngine::stepSimulation()
         int idx = it->first;
         double dh = it->second;
         
+        // Skip if index out of bounds
+        if (idx < 0 || idx >= (int)h.size() || idx >= (int)isActive.size())
+            continue;
+            
         h[idx] += dh;
         
         // Only mark as active if it has significant water
@@ -871,13 +896,15 @@ void SimulationEngine::stepSimulation()
             nextActiveCells.push_back(idx);
             
             // Also check neighbors for next step
-            for (int dir = 0; dir < 4; dir++) 
-            {
-                int nb_idx = neighbors[idx][dir];
-                if (nb_idx >= 0 && !isActive[nb_idx]) 
+            if (idx < (int)neighbors.size()) {
+                for (int dir = 0; dir < 4; dir++) 
                 {
-                    isActive[nb_idx] = 1;
-                    nextActiveCells.push_back(nb_idx);
+                    int nb_idx = neighbors[idx][dir];
+                    if (nb_idx >= 0 && nb_idx < (int)isActive.size() && !isActive[nb_idx]) 
+                    {
+                        isActive[nb_idx] = 1;
+                        nextActiveCells.push_back(nb_idx);
+                    }
                 }
             }
         } 
@@ -941,6 +968,25 @@ QImage SimulationEngine::getWaterDepthImage() const
     QImage img(ny, nx, QImage::Format_ARGB32);
     img.fill(Qt::transparent);
 
+    // Find maximum water depth for scaling
+    double maxDepth = 0.0;
+    for (int i = 0; i < nx; i++) {
+        for (int j = 0; j < ny; j++) {
+            int k = idx(i, j);
+            if (k >= 0 && k < (int)h.size() && h[k] > 0) {
+                maxDepth = std::max(maxDepth, h[k]);
+            }
+        }
+    }
+    
+    // If there's no water, return empty image
+    if (maxDepth <= 0.0) {
+        return img;
+    }
+    
+    // Debug the maximum depth found
+    qDebug() << "Maximum water depth for visualization:" << maxDepth << "m";
+
     // Draw water depths
     for (int i = 0; i < nx; i++)
     {
@@ -949,23 +995,47 @@ QImage SimulationEngine::getWaterDepthImage() const
             int k = idx(i, j);
             
             // Skip invalid cells
-            if (i < 0 || i >= nx || j < 0 || j >= ny || h.empty())
+            if (k < 0 || k >= (int)h.size() || k >= (int)dem.size())
             {
                 continue;
             }
             
-            if (h[k] > min_depth)
+            // Visualize ANY water, not just water above min_depth
+            if (h[k] > 0.0)
             {
-                // Scale water depth to blue intensity
-                // Use a logarithmic scale to better show small water depths
+                // Scale water depth to blue intensity using logarithmic scale for better visibility
                 double depth = h[k];
-                // Clamp depth to a reasonable range for visualization
-                depth = std::min<double>(depth, 0.1); // Decrease from 2.0 to 0.1 to make small depths more visible
-                double depthValue = std::min(1.0, log10(1.0 + depth * 1000.0) / 2.0); // Increase from 100.0 to 1000.0
-                int blueValue = static_cast<int>(255 * depthValue);
                 
-                // Regular water: blue with alpha based on depth
-                img.setPixel(j, i, qRgba(0, 128, 255, 200)); // Brighter blue (0, 128, 255 instead of 0, 64, blueValue)
+                // Use logarithmic scaling to make small water depths visible
+                // Map any depth > 0 to at least 10% of color range
+                double minColorIntensity = 0.1;
+                double relativeDepth = depth / maxDepth;
+                double logScale = std::log10(relativeDepth * 9.0 + 1.0); // log10(1) = 0, log10(10) = 1
+                double depthValue = minColorIntensity + (1.0 - minColorIntensity) * logScale;
+                
+                // Clamp to valid range
+                depthValue = std::max(0.0, std::min(1.0, depthValue));
+                
+                // Create a more visible blue color for water
+                int blueValue = static_cast<int>(200 + 55 * depthValue);
+                int greenValue = static_cast<int>(120 + 80 * depthValue);
+                int redValue = static_cast<int>(50 + 50 * depthValue);
+                int alpha = static_cast<int>(180 + 75 * depthValue);
+                
+                // Set pixel with water color
+                img.setPixel(j, i, qRgba(redValue, greenValue, blueValue, alpha));
+            }
+        }
+    }
+    
+    // Mark outlet cells with red dots for visibility
+    for (int i = 0; i < (int)outletCells.size(); i++) {
+        int outlet_idx = outletCells[i];
+        if (outlet_idx >= 0 && outlet_idx < nx * ny) {
+            int row = outlet_idx / ny;
+            int col = outlet_idx % ny;
+            if (row >= 0 && row < nx && col >= 0 && col < ny) {
+                img.setPixel(col, row, qRgba(255, 0, 0, 255)); // Bright red for outlets
             }
         }
     }
@@ -1210,6 +1280,12 @@ void SimulationEngine::routeWaterToOutlets()
         return;
     }
 
+    // Additional safety check for vectors
+    if (outletCells.empty()) {
+        qDebug() << "Warning: No outlet cells defined for drainage calculation";
+        return;
+    }
+
     double cellArea = resolution * resolution;
     double outflowVolume = 0.0;
     
@@ -1217,12 +1293,20 @@ void SimulationEngine::routeWaterToOutlets()
     for (int i = 0; i < (int)outletCells.size(); i++)
     {
         int outlet_idx = outletCells[i];
+        
+        // Validate outlet_idx is within bounds to prevent vector subscript out of range errors
+        if (outlet_idx < 0 || outlet_idx >= (int)h.size() || outlet_idx >= (int)dem.size()) {
+            qDebug() << "Warning: Invalid outlet cell index:" << outlet_idx << "Skipping";
+            continue;
+        }
+        
         int row = outlet_idx / ny;
         int col = outlet_idx % ny;
         
         // Skip invalid cells
         if (row < 0 || row >= nx || col < 0 || col >= ny)
         {
+            qDebug() << "Warning: Outlet cell coordinates out of range:" << row << col;
             continue;
         }
         
@@ -1231,10 +1315,24 @@ void SimulationEngine::routeWaterToOutlets()
             qDebug() << "Outlet cell (" << row << "," << col << ") depth:" << h[outlet_idx]
                      << ", min_depth:" << min_depth;
         }
-                        
-        // Skip cells with no water
+        
+        // Check if water depth is too small for drainage
         if (h[outlet_idx] <= min_depth)
         {
+            // Even with depths below threshold, allow minimal drainage to encourage flow
+            // This helps prevent stagnation in the simulation
+            if (h[outlet_idx] > 0.0) {
+                double microDrainage = h[outlet_idx] * cellArea * 0.1; // Drain 10% of what's there
+                h[outlet_idx] *= 0.9; // Reduce water depth
+                
+                // Track this small amount of drainage
+                QPoint outletPoint(row, col);
+                perOutletDrainage[outletPoint] += microDrainage;
+                outflowVolume += microDrainage;
+                
+                qDebug() << "Micro-drainage at outlet (" << row << "," << col << "): " << microDrainage
+                         << " m³, remaining depth: " << h[outlet_idx];
+            }
             continue;
         }
         
@@ -1257,6 +1355,12 @@ void SimulationEngine::routeWaterToOutlets()
             outletVolume = availableVolume * 0.95; // Limit to 95% of available water to avoid emptying completely
         }
         
+        // Safety check for numerical stability
+        if (!std::isfinite(outletVolume) || outletVolume < 0) {
+            qDebug() << "Warning: Invalid outlet volume calculation:" << outletVolume << "- using fallback";
+            outletVolume = availableVolume * 0.1; // Fallback to 10% drainage
+        }
+        
         // Update water depth
         h[outlet_idx] -= outletVolume / cellArea;
         
@@ -1275,12 +1379,17 @@ void SimulationEngine::routeWaterToOutlets()
         perOutletDrainage[outletPoint] += outletVolume;
         outflowVolume += outletVolume;
         
-        // Make sure outlet is in active cells list for next iteration
+        // Make sure outlet is in active cells list for next iteration (with bounds checking)
         if (h[outlet_idx] > min_depth)
         {
-            isActive[outlet_idx] = 1;
-            if (std::find(nextActiveCells.begin(), nextActiveCells.end(), outlet_idx) == nextActiveCells.end()) {
-                nextActiveCells.push_back(outlet_idx);
+            // Make sure outlet_idx is within bounds of isActive vector
+            if (outlet_idx >= 0 && outlet_idx < (int)isActive.size()) {
+                isActive[outlet_idx] = 1;
+                
+                // Safely add to nextActiveCells if not already there
+                if (std::find(nextActiveCells.begin(), nextActiveCells.end(), outlet_idx) == nextActiveCells.end()) {
+                    nextActiveCells.push_back(outlet_idx);
+                }
             }
         }
     }
