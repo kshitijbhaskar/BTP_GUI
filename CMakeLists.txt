@@ -9,6 +9,21 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Enable OpenMP support
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+    message(STATUS "OpenMP found and enabled")
+else()
+    message(WARNING "OpenMP not found. Multithreading optimizations will be disabled.")
+endif()
+
+# Add flags specific to MSVC for OpenMP
+if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /openmp")
+    message(STATUS "Added /openmp flag for MSVC")
+endif()
+
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets LinguistTools)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets LinguistTools)
 
@@ -81,6 +96,11 @@ target_link_libraries(BTP_GUI PRIVATE
     Qt${QT_VERSION_MAJOR}::Widgets
     ${GDAL_LIBRARY_CLEAN}
 )
+
+# Link with OpenMP if found
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(BTP_GUI PRIVATE OpenMP::OpenMP_CXX)
+endif()
 
 # Qt for iOS sets MACOSX_BUNDLE_GUI_IDENTIFIER automatically since Qt 6.1.
 # If you are developing for iOS or macOS you should consider setting an

@@ -13,6 +13,11 @@
 #include <QPen>
 #include <QFileInfo>
 
+// For OpenMP support
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 // Include GDAL headers
 #include "gdal_priv.h"
 #include "ogr_spatialref.h"
@@ -134,8 +139,8 @@ bool SimulationEngine::loadDEM(const QString &filename)
         }
         qDebug() << "Using NoData value:" << noDataValue;
 
-        // Allocate memory for DEM data
-        dem.assign(nx, std::vector<double>(ny));
+        // Allocate memory for flattened DEM data
+        dem.resize(nx * ny);
         std::vector<double> rowData(ny);
 
         // Read data row by row
@@ -151,12 +156,12 @@ bool SimulationEngine::loadDEM(const QString &filename)
                 success = false;
                 break;
             }
-            // Assign row data, handle NoData values
+            // Assign row data to flattened array, handle NoData values
             for (int j = 0; j < ny; ++j) {
                 if (bGotNoData && std::abs(rowData[j] - noDataValue) < 1e-6) { // Compare with tolerance
-                    dem[i][j] = -999999.0; // Standard internal NoData value
+                    dem[idx(i,j)] = -999999.0; // Standard internal NoData value
                 } else {
-                    dem[i][j] = rowData[j];
+                    dem[idx(i,j)] = rowData[j];
                 }
             }
         }
@@ -171,7 +176,7 @@ bool SimulationEngine::loadDEM(const QString &filename)
     }
     else if (suffix == "csv")
     {
-        // --- Load CSV using original method --- 
+        // --- Load CSV using original method but with flattened output --- 
         qDebug() << "Attempting to load CSV file:" << filename;
         QFile file(filename);
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
@@ -203,10 +208,17 @@ bool SimulationEngine::loadDEM(const QString &filename)
         if (tmpDEM.empty())
             return false;
             
-        // Store DEM and dimensions
-        dem = tmpDEM;
-        nx = dem.size();
-        ny = (nx > 0) ? dem[0].size() : 0;
+        // Store dimensions
+        nx = tmpDEM.size();
+        ny = (nx > 0) ? tmpDEM[0].size() : 0;
+        
+        // Copy data to flattened array
+        dem.resize(nx * ny);
+        for (int i = 0; i < nx; i++) {
+            for (int j = 0; j < ny; j++) {
+                dem[idx(i,j)] = tmpDEM[i][j];
+            }
+        }
         
         // Keep the user-defined or default resolution for CSV
         qDebug() << "CSV loaded. Dimensions (nx, ny):" << nx << ny << ", Using resolution:" << resolution;
@@ -224,7 +236,10 @@ bool SimulationEngine::loadDEM(const QString &filename)
     }
     
     // Initialize water depth grid (h) to zero
-    h.assign(nx, std::vector<double>(ny, 0.0));
+    h.assign(nx * ny, 0.0);
+    
+    // Initialize flow accumulation grid
+    flowAccumulationGrid.assign(nx * ny, 0.0);
 
     // Initialize outlet-related members
     outletRow = nx - 1; // Default outlet row (may be changed by methods)
@@ -233,10 +248,6 @@ bool SimulationEngine::loadDEM(const QString &filename)
     drainageVolume = 0.0;
     
     qDebug() << "DEM loaded successfully. nx:" << nx << "ny:" << ny << "Resolution:" << resolution;
-    
-    // Perform initial depression filling and flow accumulation
-    // fillDepressions(); // Commented out - Implementation missing
-    // calculateFlowAccumulation(); // Commented out - Implementation missing
     
     return true;
 }
@@ -355,7 +366,7 @@ bool SimulationEngine::initSimulation()
     
     // Initialize water depth grid
     try {
-        h.assign(nx, std::vector<double>(ny, 0.0));
+        h.assign(nx * ny, 0.0);
     } 
     catch (const std::exception& e) {
         qDebug() << "ERROR: Failed to initialize water depth grid:" << e.what();
@@ -420,9 +431,9 @@ void SimulationEngine::computeOutletCellsByPercentile(double percentile)
             // Check if the cell is on the boundary
             if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1) {
                 // Check if it's a valid DEM cell (not no-data)
-                if (dem[i][j] > -999998.0) {
+                if (dem[idx(i,j)] > -999998.0) {
                     int index1D = i * ny + j;
-                    boundaryCells.push_back({dem[i][j], index1D});
+                    boundaryCells.push_back({dem[idx(i,j)], index1D});
                 }
             }
         }
@@ -435,8 +446,8 @@ void SimulationEngine::computeOutletCellsByPercentile(double percentile)
         int minIdx = -1;
         for(int i=0; i<nx; ++i) {
             for(int j=0; j<ny; ++j) {
-                if (dem[i][j] > -999998.0 && dem[i][j] < minElev) {
-                    minElev = dem[i][j];
+                if (dem[idx(i,j)] > -999998.0 && dem[idx(i,j)] < minElev) {
+                    minElev = dem[idx(i,j)];
                     minIdx = i * ny + j;
                 }
             }
@@ -530,88 +541,66 @@ void SimulationEngine::stepSimulation()
     // Get the rainfall rate to use (either constant or time-varying)
     double currentRainfallRate = useTimeVaryingRainfall ? getCurrentRainfallRate() : rainfallRate;
     
-    // Debug - print simulation state at regular intervals
+    // Debug - print simulation state at regular intervals, but not inside inner loops
     if (int(time) % 10 == 0) {
         qDebug() << ">>> Simulation Time:" << time << "s";
         qDebug() << "    Current Rainfall Rate:" << currentRainfallRate << "m/s";
         qDebug() << "    Total Drainage So Far:" << drainageVolume << "m³";
-        
-        // Check outlet cell water depths
-        qDebug() << "    Checking" << outletCells.size() << "outlet cells:";
-        int checkedCount = 0;
-        for (const auto& idx : outletCells) {
-            if (checkedCount >= 3) break; // Only check first few cells to avoid log spam
-            
-            int i = idx / ny;  // row
-            int j = idx % ny;  // column
-            
-            if (i >= 0 && i < nx && j >= 0 && j < ny) {
-                qDebug() << "      Outlet at (" << i << "," << j << ") - Water depth:" << h[i][j] 
-                         << "m, Elevation:" << dem[i][j] << "m";
-                checkedCount++;
-            }
-        }
     }
 
     // Apply rainfall and infiltration to each cell
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
-            if (dem[i][j] <= -999998.0) {
-                h[i][j] = 0.0; 
+            int k = idx(i, j);
+            if (dem[k] <= -999998.0) {
+                h[k] = 0.0; 
                 continue;
             }
             double delta = (currentRainfallRate - Ks) * dt;
-            h[i][j] += delta;
-            if (h[i][j] < 0.0) h[i][j] = 0.0;
+            h[k] += delta;
+            if (h[k] < 0.0) h[k] = 0.0;
         }
     }
 
     // Calculate total system water *after* rainfall/infiltration
     double totalSystemWater = 0.0;
     double cellArea = resolution * resolution;
+    #pragma omp parallel for collapse(2) reduction(+:totalSystemWater) schedule(static)
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
-            if (dem[i][j] > -999998.0) {
-                totalSystemWater += h[i][j] * cellArea;
+            int k = idx(i, j);
+            if (dem[k] > -999998.0) {
+                totalSystemWater += h[k] * cellArea;
             }
         }
     }
-
-    // Ensure outlets have some minimum water (helps start drainage)
-    /* // <<< COMMENT OUT START
-    for (const auto& idx : outletCells) {
-        int i = idx / ny;  
-        int j = idx % ny;  
-        if (i >= 0 && i < nx && j >= 0 && j < ny && dem[i][j] > -999998.0) {
-             if (h[i][j] < min_depth * 2) { // Keep this minimal enforcement
-                h[i][j] = min_depth * 2;
-            }
-        }
-    }
-    */ // <<< COMMENT OUT END
 
     // --- Refactored Flux Calculation and Water Depth Update --- 
-
-    std::vector<std::vector<std::array<double, 4>>> Q_out(nx, std::vector<std::array<double, 4>>(ny, {0.0, 0.0, 0.0, 0.0}));
-    std::vector<std::vector<double>> Q_total_out(nx, std::vector<double>(ny, 0.0));
+    std::vector<std::array<double, 4>> Q_out(nx * ny, {0.0, 0.0, 0.0, 0.0});
+    std::vector<double> Q_total_out(nx * ny, 0.0);
 
     int di[4] = {-1, 0, 1, 0}; // N, E, S, W
     int dj[4] = {0, 1, 0, -1};
 
     // First pass: Calculate potential outflow Q_out
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
-            if (dem[i][j] <= -999998.0) continue; 
-            double h_i = h[i][j];
+            int k = idx(i, j);
+            if (dem[k] <= -999998.0) continue; 
+            double h_i = h[k];
             if (h_i < min_depth) continue;
-            double H_i = h_i + dem[i][j];
+            double H_i = h_i + dem[k];
 
-            for (int k = 0; k < 4; k++) { 
-                int ni = i + di[k];
-                int nj = j + dj[k];
-                if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || dem[ni][nj] <= -999998.0) continue;
-                double h_j = h[ni][nj];
-                double H_j = h_j + dem[ni][nj];
+            for (int d = 0; d < 4; d++) { 
+                int ni = i + di[d];
+                int nj = j + dj[d];
+                if (ni < 0 || ni >= nx || nj < 0 || nj >= ny) continue;
+                int nk = idx(ni, nj);
+                if (dem[nk] <= -999998.0) continue;
+                double h_j = h[nk];
+                double H_j = h_j + dem[nk];
                 double deltaH = H_i - H_j;
 
                 if (deltaH > 0) {
@@ -619,56 +608,63 @@ void SimulationEngine::stepSimulation()
                     double A = h_i * resolution; 
                     double R = h_i;             
                     double Q = (A * std::pow(R, 2.0/3.0) * std::sqrt(S)) / n_manning;
-                    Q_out[i][j][k] = Q;
-                    Q_total_out[i][j] += Q;
+                    Q_out[k][d] = Q;
+                    Q_total_out[k] += Q;
                 }
             }
         }
     }
 
     // Second pass: Calculate delta_h using mass conservation scaling
-    std::vector<std::vector<double>> delta_h(nx, std::vector<double>(ny, 0.0));
+    std::vector<double> delta_h(nx * ny, 0.0);
 
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
-            if (dem[i][j] <= -999998.0) continue;
+            int k = idx(i, j);
+            if (dem[k] <= -999998.0) continue;
 
-            double V_t = h[i][j] * cellArea; 
+            double V_t = h[k] * cellArea; 
             double c = 1.0;                 
 
-            if (Q_total_out[i][j] * dt > V_t && Q_total_out[i][j] > 0) {
-                c = V_t / (Q_total_out[i][j] * dt);
+            if (Q_total_out[k] * dt > V_t && Q_total_out[k] > 0) {
+                c = V_t / (Q_total_out[k] * dt);
             }
 
             double netFluxVolume = 0.0;
             // Scaled Outflows FROM cell (i,j)
-            netFluxVolume -= Q_total_out[i][j] * c * dt; // Apply dt here
+            netFluxVolume -= Q_total_out[k] * c * dt; // Apply dt here
 
             // Scaled Inflows TO cell (i,j) FROM neighbors
-            for (int k = 0; k < 4; k++) {
-                int ni = i - di[k]; // Neighbor index (source of flow)
-                int nj = j - dj[k];
-                int flow_direction_from_neighbor = (k + 2) % 4; // Flow direction index from neighbor's perspective
+            for (int d = 0; d < 4; d++) {
+                int ni = i - di[d]; // Neighbor index (source of flow)
+                int nj = j - dj[d];
+                if (ni < 0 || ni >= nx || nj < 0 || nj >= ny) continue;
+                
+                int nk = idx(ni, nj);
+                if (dem[nk] <= -999998.0) continue;
+                
+                int flow_direction_from_neighbor = (d + 2) % 4; // Flow direction index from neighbor's perspective
 
-                if (ni >= 0 && ni < nx && nj >= 0 && nj < ny && dem[ni][nj] > -999998.0) {
-                    double V_neighbor = h[ni][nj] * cellArea;
-                    double c_neighbor = 1.0;
-                    if (Q_total_out[ni][nj] * dt > V_neighbor && Q_total_out[ni][nj] > 0) {
-                        c_neighbor = V_neighbor / (Q_total_out[ni][nj] * dt);
-                    }
-                    netFluxVolume += Q_out[ni][nj][flow_direction_from_neighbor] * c_neighbor * dt; // Apply dt here
+                double V_neighbor = h[nk] * cellArea;
+                double c_neighbor = 1.0;
+                if (Q_total_out[nk] * dt > V_neighbor && Q_total_out[nk] > 0) {
+                    c_neighbor = V_neighbor / (Q_total_out[nk] * dt);
                 }
+                netFluxVolume += Q_out[nk][flow_direction_from_neighbor] * c_neighbor * dt; // Apply dt here
             }
-            delta_h[i][j] = netFluxVolume / cellArea;
+            delta_h[k] = netFluxVolume / cellArea;
         }
     }
 
     // Third pass: Update water depths
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
-            if (dem[i][j] <= -999998.0) continue;
-            h[i][j] += delta_h[i][j];
-            if (h[i][j] < 0.0) h[i][j] = 0.0;
+            int k = idx(i, j);
+            if (dem[k] <= -999998.0) continue;
+            h[k] += delta_h[k];
+            if (h[k] < 0.0) h[k] = 0.0;
         }
     }
     // --- End of Refactored Section ---
@@ -689,19 +685,14 @@ void SimulationEngine::stepSimulation()
     double timeFactor = 0.7 + 0.3 * timeProgress; 
     drainageFactor *= timeFactor;
     
-    qDebug() << "Adaptive drainage factor (final):" << drainageFactor;
-    
     for (const auto& idx : outletCells) {
         int i = idx / ny; int j = idx % ny;
-        if (i >= 0 && i < nx && j >= 0 && j < ny && dem[i][j] > -999998.0) {
-            totalWaterOnOutlets += h[i][j] * cellArea;
-            double h_i = h[i][j];
-            if (time < 5.0 || fmod(time, 100.0) < dt) { // Limit debug output frequency
-                 qDebug() << "  Outlet (" << i << "," << j << ") h_i:" << h_i << "(min_depth:" << min_depth << ")";
-            }
+        int k = idx(i, j);
+        if (i >= 0 && i < nx && j >= 0 && j < ny && dem[k] > -999998.0) {
+            totalWaterOnOutlets += h[k] * cellArea;
+            double h_i = h[k];
             
             if (h_i > min_depth) {
-                qDebug() << "    >> Drainage triggered for Outlet (" << i << "," << j << ") with h_i:" << h_i;
                 double S = 0.2; 
                 double A = h_i * resolution;
                 double Q = 2.5 * drainageFactor * (A * std::pow(h_i, 2.0/3.0) * std::sqrt(S)) / n_manning; 
@@ -709,24 +700,26 @@ void SimulationEngine::stepSimulation()
                 double availableVolume = h_i * cellArea;
                 if (vol > availableVolume * 0.95) vol = availableVolume * 0.95;
 
-                h[i][j] -= vol / cellArea;
+                h[k] -= vol / cellArea;
                 outflow += vol;
-                qDebug() << "       Calculated vol:" << vol << ", outflow step total:" << outflow;
                 QPoint outletPoint(i, j);
                 perOutletDrainage[outletPoint] += vol;
             }
         }
     }
     
-    qDebug() << "Total water volume on outlet cells:" << totalWaterOnOutlets << "m³";
-    qDebug() << "Total drainage this step:" << outflow << "m³";
     drainageVolume += outflow;
     drainageTimeSeries.append(qMakePair(time + dt, drainageVolume));
     time += dt; // Use fixed dt for now
 
     // Emit signals to update UI
     emit simulationTimeUpdated(time, totalTime);
-    emit simulationStepCompleted(getWaterDepthImage());
+    
+    // Update UI only every 5 steps to reduce overhead
+    static int stepCount = 0;
+    if (++stepCount % 5 == 0) {
+        emit simulationStepCompleted(getWaterDepthImage());
+    }
 }
 
 double SimulationEngine::getTotalDrainage() const
@@ -744,40 +737,31 @@ QImage SimulationEngine::getWaterDepthImage() const
     if (nx <= 0 || ny <= 0)
         return QImage();
 
-    // Create an image with dimensions matching the DEM grid
-    // Note: Correctly match image dimensions to DEM dimensions (nx = rows, ny = columns)
-    QImage img(ny, nx, QImage::Format_RGB32);
-    img.fill(Qt::white);
+    // Pre-allocate buffer if needed (mutable member)
+    if (waterImg.size() != QSize(ny, nx)) {
+        waterImg = QImage(ny, nx, QImage::Format_RGB32);
+    }
 
     // Find the max water depth for scaling
-    double maxDepth = 0.0;
-    for (int i = 0; i < nx; i++)
-    {
-        for (int j = 0; j < ny; j++)
-        {
-            // Skip no-data cells
-            if (dem[i][j] > -999998.0) {
-                maxDepth = std::max(maxDepth, h[i][j]);
-            }
+    double maxDepth = 1e-9; // Ensure non-zero
+    for (int k = 0; k < nx * ny; k++) {
+        if (dem[k] > -999998.0) {
+            maxDepth = std::max(maxDepth, h[k]);
         }
     }
-    
-    // Ensure max depth is positive for scaling
-    if (maxDepth <= 0.0)
-        maxDepth = 1.0;
 
-    // Create a color gradient from white to blue
-    for (int i = 0; i < nx; i++)
-    {
-        for (int j = 0; j < ny; j++)
-        {
-            if (dem[i][j] <= -999998.0) {
+    // Create a color gradient from white to blue using scanLine for better performance
+    for (int i = 0; i < nx; i++) {
+        QRgb* line = reinterpret_cast<QRgb*>(waterImg.scanLine(i));
+        for (int j = 0; j < ny; j++) {
+            int k = idx(i, j);
+            if (dem[k] <= -999998.0) {
                 // No-data cells are light gray
-                img.setPixel(j, i, qRgb(200, 200, 200));
+                line[j] = qRgb(200, 200, 200);
                 continue;
             }
             
-            double depth = h[i][j];
+            double depth = h[k];
             // Normalize depth to 0-1 range
             double normalizedDepth = depth / maxDepth;
             
@@ -786,15 +770,13 @@ QImage SimulationEngine::getWaterDepthImage() const
             int red = int(255 * (1.0 - normalizedDepth));
             int green = int(255 * (1.0 - normalizedDepth));
             
-            // Flip the image vertically to correctly represent the DEM where row 0 is the top
-            // and j=0 is the left, j=ny-1 is the right
-            img.setPixel(j, i, qRgb(red, green, blue));
+            line[j] = qRgb(red, green, blue);
         }
     }
 
     // Draw gridlines to help identify cell positions if enabled
     if (showGrid) {
-        QPainter painter(&img);
+        QPainter painter(&waterImg);
         
         // Use lighter, more subtle grid lines
         painter.setPen(QPen(QColor(0, 0, 0, 40), 0.5)); // Very light black, mostly transparent, thin
@@ -846,7 +828,7 @@ QImage SimulationEngine::getWaterDepthImage() const
         }
     }
     
-    return img;
+    return waterImg;
 }
 
 QImage SimulationEngine::getDEMPreviewImage() const
@@ -884,9 +866,9 @@ QImage SimulationEngine::getDEMPreviewImage() const
     const double NO_DATA_VALUE = -999999.0;
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
-            if (dem[i][j] > NO_DATA_VALUE + 1) { 
-                minElev = std::min(minElev, dem[i][j]);
-                maxElev = std::max(maxElev, dem[i][j]);
+            if (dem[idx(i,j)] > NO_DATA_VALUE + 1) { 
+                minElev = std::min(minElev, dem[idx(i,j)]);
+                maxElev = std::max(maxElev, dem[idx(i,j)]);
             }
         }
     }
@@ -900,10 +882,10 @@ QImage SimulationEngine::getDEMPreviewImage() const
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
             QColor cellColor;
-            if (dem[i][j] <= NO_DATA_VALUE + 1) { 
+            if (dem[idx(i,j)] <= NO_DATA_VALUE + 1) { 
                 cellColor = QColor(200, 200, 200);
             } else {
-                double normalizedElev = (dem[i][j] - minElev) / elevRange;
+                double normalizedElev = (dem[idx(i,j)] - minElev) / elevRange;
                 int red = int(155 + 100 * normalizedElev);
                 int green = int(200 - 60 * normalizedElev);
                 int blue = int(50 + 40 * normalizedElev);
@@ -936,7 +918,7 @@ QImage SimulationEngine::getDEMPreviewImage() const
         }
         // Vertical gridlines
         for (int j = 0; j <= ny; j += interval) {
-            painter.drawLine(demRect.left() + j * scale, demRect.top(), demRect.left() + j * scale, demRect.bottom());
+            painter.drawLine(j, 0, j, nx);
         }
     }
     
@@ -1194,7 +1176,7 @@ void SimulationEngine::routeWaterToOutlets()
         int j = idx % ny;  // column
         
         // Make sure coordinates are valid
-        if (i < 0 || i >= nx || j < 0 || j >= ny || dem[i][j] <= -999998.0)
+        if (i < 0 || i >= nx || j < 0 || j >= ny || dem[idx(i,j)] <= -999998.0)
             continue;
             
         // Find multiple paths from the outlet toward higher accumulation areas
@@ -1249,7 +1231,7 @@ void SimulationEngine::routeWaterToOutlets()
                     int nj = currentJ + dj[k];
                     
                     // Skip if out of bounds or no-data cell
-                    if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || dem[ni][nj] <= -999998.0) {
+                    if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || dem[idx(ni,nj)] <= -999998.0) {
                         continue;
                     }
                     
@@ -1262,12 +1244,12 @@ void SimulationEngine::routeWaterToOutlets()
                     // Calculate a score based on flow accumulation and elevation
                     // Prefer cells that: 1) have high flow accumulation, 2) are uphill
                     double flowScore = flowAccumulation[ni][nj] * 0.7; // Increased weight for flow accumulation
-                    double elevScore = std::max(0.0, dem[ni][nj] - dem[currentI][currentJ]) * 1.5;
-                    double upstreamScore = (ni < currentI) ? 2.5 : 0.0; // Prefer upstream cells
+                    double elevScore = std::max(0.0, dem[idx(ni,nj)] - dem[idx(i,j)]) * 1.5;
+                    double upstreamScore = (ni < i) ? 2.5 : 0.0; // Prefer upstream cells
                     
                     // New: Add a penalty for flat areas to help guide water through depressions
                     double flatPenalty = 0.0;
-                    if (std::abs(dem[ni][nj] - dem[currentI][currentJ]) < 0.01) {
+                    if (std::abs(dem[idx(ni,nj)] - dem[idx(i,j)]) < 0.01) {
                         flatPenalty = -1.0; // Penalty for flat areas
                     }
                     
@@ -1355,7 +1337,7 @@ QImage SimulationEngine::getFlowAccumulationImage() const
     double maxFlow = 0.0;
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
-            if (dem[i][j] > -999998.0) {
+            if (dem[idx(i,j)] > -999998.0) {
                 maxFlow = std::max(maxFlow, flowAccumulationGrid[i][j]);
             }
         }
@@ -1367,7 +1349,7 @@ QImage SimulationEngine::getFlowAccumulationImage() const
     // Create a color gradient to visualize flow paths
     for (int i = 0; i < nx; i++) {
         for (int j = 0; j < ny; j++) {
-            if (dem[i][j] <= -999998.0) {
+            if (dem[idx(i,j)] <= -999998.0) {
                 // No-data cells are light gray
                 img.setPixel(j, i, qRgb(200, 200, 200));
                 continue;
@@ -1387,7 +1369,7 @@ QImage SimulationEngine::getFlowAccumulationImage() const
             // Add terrain coloring for context
             if (normalizedFlow < 0.2) {
                 // For low flow areas, use terrain coloring (green to brown gradient)
-                double normalizedElev = (dem[i][j] - dem[outletRow][j]) / 10.0;
+                double normalizedElev = (dem[idx(i,j)] - dem[idx(outletRow,j)]) / 10.0;
                 normalizedElev = std::max(0.0, std::min(1.0, normalizedElev));
                 
                 red = int(155 + 100 * normalizedElev);

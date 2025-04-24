@@ -116,12 +116,15 @@ private:
     // Resolution is now often derived from the GeoTIFF's geotransform
     double resolution;  // meters per cell
 
-    // DEM and water depth grids
-    std::vector<std::vector<double>> dem;
-    std::vector<std::vector<double>> h;  // water depth (m)
+    // DEM and water depth grids - flattened for optimization
+    std::vector<double> dem;
+    std::vector<double> h;  // water depth (m)
+    
+    // Helper function to convert 2D indices to 1D index
+    inline int idx(int i, int j) const { return i * ny + j; }
 
     // Flow accumulation grid for visualization
-    std::vector<std::vector<double>> flowAccumulationGrid;
+    std::vector<double> flowAccumulationGrid;
 
     // Simulation parameters
     double n_manning;    // Manning's roughness coefficient
@@ -157,6 +160,9 @@ private:
     bool showGrid = true;
     bool showRulers = false; // Default to rulers disabled initially
     int gridInterval = 10;
+    
+    // Pre-allocated image buffer for water depth visualization
+    mutable QImage waterImg;
 
     // Helper functions
     void computeDefaultAutomaticOutletCells();

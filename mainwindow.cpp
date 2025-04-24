@@ -2073,8 +2073,6 @@ void MainWindow::onSimulationStep()
     if (!simulationRunning || simulationPaused) {
         return; // Don't step if simulation is not running or is paused
     }
-
-    qDebug() << "==== SIMULATION STEP ====";
     
     // Perform a simulation step
     simEngine->stepSimulation();
@@ -2084,40 +2082,16 @@ void MainWindow::onSimulationStep()
     double totalTime = simEngine->getTotalTime();
     double totalDrainage = simEngine->getTotalDrainage();
     
-    qDebug() << "Current time:" << currentTime << "/ Total time:" << totalTime;
-    qDebug() << "Total drainage:" << totalDrainage;
-
-    // Get the current water depth image
-    qDebug() << "Getting water depth image...";
-    QImage waterDepthImage = simEngine->getWaterDepthImage();
-    
-    if (waterDepthImage.isNull()) {
-        qDebug() << "ERROR: Water depth image is NULL!";
-        return;
-    }
-    
-    qDebug() << "Water depth image dimensions:" << waterDepthImage.width() << "x" << waterDepthImage.height();
-    
-    // Update the simulation image
-    currentSimulationImage = waterDepthImage;
-    
-    // Update the display with the current image
-    updateVisualization();
-    
-    // Display simulation stats
-    QString timeStr = QString("Time: %1 / %2 seconds").arg(currentTime, 0, 'f', 1).arg(totalTime, 0, 'f', 1);
-    QString drainageStr = QString("Total drainage: %1 m³").arg(totalDrainage, 0, 'f', 3);
-    
-    // Update the status bar
-    statusBar()->showMessage(timeStr + " | " + drainageStr);
-    
-    // Update UI labels
+    // Update UI labels - These are lightweight updates
     timeElapsedLabel->setText(QString("Time: %1 / %2 s").arg(currentTime, 0, 'f', 1).arg(totalTime, 0, 'f', 1));
     drainageVolumeLabel->setText(QString("Drainage: %1 m³").arg(totalDrainage, 0, 'f', 3));
     
     // Update progress bar (as percentage)
     int progress = static_cast<int>((currentTime / totalTime) * 100.0);
     simulationProgress->setValue(progress);
+    
+    // Don't update the visualization here - it's already updated by the
+    // SimulationEngine::simulationStepCompleted signal (emitted every 5 steps)
     
     // Check if the simulation is complete
     if (currentTime >= totalTime) {
@@ -2133,7 +2107,7 @@ void MainWindow::onSimulationStep()
                                 .arg(totalDrainage, 0, 'f', 3);
         
         // Show completion message in status bar
-        statusBar()->showMessage("Simulation complete. " + drainageStr);
+        statusBar()->showMessage("Simulation complete. Total drainage: " + QString::number(totalDrainage, 'f', 3) + " m³");
         
         // Update the display text to indicate completion
         resultsOutputLabel->setText("Simulation complete. Final water depth visualization shown above.");
