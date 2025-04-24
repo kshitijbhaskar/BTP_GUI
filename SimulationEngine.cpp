@@ -549,37 +549,37 @@ void SimulationEngine::setTimeVaryingRainfall(bool enabled)
 void SimulationEngine::setRainfallSchedule(const QVector<QPair<double, double>>& schedule)
 {
     // Clear existing schedule
-    rainfallSchedule.clear();
+    timeVaryingRainfall.clear();
     
     // Copy and sort the schedule by timestamp
-    rainfallSchedule = schedule;
-    std::sort(rainfallSchedule.begin(), rainfallSchedule.end(), 
+    timeVaryingRainfall = schedule;
+    std::sort(timeVaryingRainfall.begin(), timeVaryingRainfall.end(), 
               [](const QPair<double, double>& a, const QPair<double, double>& b) {
                   return a.first < b.first;
               });
     
     // Ensure first entry is at time 0
-    if (!rainfallSchedule.isEmpty() && rainfallSchedule.first().first > 0) {
-        rainfallSchedule.prepend(qMakePair(0.0, rainfallSchedule.first().second));
+    if (!timeVaryingRainfall.isEmpty() && timeVaryingRainfall.first().first > 0) {
+        timeVaryingRainfall.prepend(qMakePair(0.0, timeVaryingRainfall.first().second));
     }
     
     // If schedule is empty, add a single entry with the current constant rate
-    if (rainfallSchedule.isEmpty()) {
-        rainfallSchedule.append(qMakePair(0.0, rainfallRate));
+    if (timeVaryingRainfall.isEmpty()) {
+        timeVaryingRainfall.append(qMakePair(0.0, rainfallRate));
     }
 }
 
 double SimulationEngine::getCurrentRainfallRate() const
 {
-    if (!useTimeVaryingRainfall || rainfallSchedule.isEmpty()) {
+    if (!useTimeVaryingRainfall || timeVaryingRainfall.isEmpty()) {
         return rainfallRate; // Fall back to constant rate
     }
     
     // Find the applicable rainfall rate for the current time
-    double currentRate = rainfallSchedule.first().second; // Default to first rate
+    double currentRate = timeVaryingRainfall.first().second; // Default to first rate
     
-    for (int i = 0; i < rainfallSchedule.size(); i++) {
-        const QPair<double, double>& entry = rainfallSchedule[i];
+    for (int i = 0; i < timeVaryingRainfall.size(); i++) {
+        const QPair<double, double>& entry = timeVaryingRainfall[i];
         
         // If this entry's time is in the future, use the previous entry's rate
         if (entry.first > time) {
@@ -694,7 +694,7 @@ void SimulationEngine::stepSimulation()
             double h_local_max = h[k] * cellArea / (resolution * dt);
             Q = std::min(Q, h_local_max);
             
-            outflows.push_back({nb_idx, Q});
+            outflows.push_back(std::make_pair(nb_idx, Q));
             total_out += Q;
         }
         
@@ -738,7 +738,10 @@ void SimulationEngine::stepSimulation()
     // Update water depths and mark active cells for next iteration
     nextActiveCells.clear();
     
-    for (const auto& [idx, dh] : delta_h) {
+    for (const auto& pair : delta_h) {
+        int idx = pair.first;
+        double dh = pair.second;
+        
         h[idx] += dh;
         
         // Only mark as active if it has significant water
@@ -772,7 +775,7 @@ void SimulationEngine::stepSimulation()
             }
         }
     }
-    
+
     // Process outlet cells to handle drainage
     routeWaterToOutlets();
     
@@ -1262,24 +1265,6 @@ void SimulationEngine::computeDefaultAutomaticOutletCells()
     computeOutletCellsByPercentile(outletPercentile);
 }
 
-// Initialize the neighbor offsets for efficient neighbor lookups
-void SimulationEngine::initializeNeighborOffsets()
-{
-    // Precompute the offsets for 4-connectivity (N, E, S, W)
-    neighborOffsets.resize(4);
-    // North neighbor: subtract nx (one row up)
-    neighborOffsets[0] = -nx;
-    // East neighbor: add 1 (one column right)
-    neighborOffsets[1] = 1;
-    // South neighbor: add nx (one row down)
-    neighborOffsets[2] = nx;
-    // West neighbor: subtract 1 (one column left)
-    neighborOffsets[3] = -1;
-    
-    // Initialize flow accumulation grid to track flow paths
-    flowAccumulationGrid.resize(nx * ny, 0);
-}
-
 // Get the index of the lowest elevation neighbor
 int SimulationEngine::getLowestNeighborIdx(int i, int j) const
 {
@@ -1288,30 +1273,21 @@ int SimulationEngine::getLowestNeighborIdx(int i, int j) const
     int lowestIdx = -1;
     double centerElevation = dem[centerIdx] + h[centerIdx];
     
-    // Check all 4 neighbors using precomputed offsets
+    // Check all 4 neighbors using precomputed neighbors
     for (int n = 0; n < 4; n++) {
-        // Use offset to calculate neighbor index directly
-        int ni, nj;
-        switch (n) {
-            case 0: ni = i; nj = j-1; break; // North
-            case 1: ni = i+1; nj = j; break; // East
-            case 2: ni = i; nj = j+1; break; // South
-            case 3: ni = i-1; nj = j; break; // West
-        }
+        // Get neighbor index directly from precomputed array
+        int nk = neighbors[centerIdx][n];
         
-        // Validate neighbor coordinates
-        if (!isValidCell(ni, nj)) continue;
-        
-        // Calculate neighbor index
-        int neighborIdx = idx(ni, nj);
+        // Skip invalid neighbors
+        if (nk < 0) continue;
         
         // Calculate neighbor elevation
-        double neighborElevation = dem[neighborIdx] + h[neighborIdx];
+        double neighborElevation = dem[nk] + h[nk];
         
         // Find the lowest neighbor
         if (neighborElevation < lowestElevation && neighborElevation < centerElevation) {
             lowestElevation = neighborElevation;
-            lowestIdx = neighborIdx;
+            lowestIdx = nk;
         }
     }
     
