@@ -1,3 +1,18 @@
+/**
+ * @class SimulationEngine
+ * @brief Core simulation engine for surface water flow and drainage modeling
+ *
+ * This class implements a hydrological simulation model for surface water flow,
+ * incorporating the following features:
+ * - Digital Elevation Model (DEM) processing and visualization
+ * - Rainfall-runoff simulation with variable rainfall rates
+ * - Manning's equation for flow routing
+ * - Infiltration modeling using constant rate method
+ * - Automatic and manual outlet cell selection
+ * - Depression filling for continuous flow paths
+ * - Flow accumulation calculation for channel network identification
+ */
+
 #include "SimulationEngine.h"
 #include <QFile>
 #include <QTextStream>
@@ -17,6 +32,18 @@
 #include "gdal_priv.h"
 #include "ogr_spatialref.h"
 
+/**
+ * @brief Constructs the simulation engine with default parameters
+ * @param parent QObject parent for memory management
+ * 
+ * Initializes the simulation with the following default values:
+ * - Cell resolution: 0.25m
+ * - Manning's coefficient: 0.03
+ * - Infiltration rate (Ks): 1e-6 m/s
+ * - Minimum water depth: 1e-5 m
+ * - Simulation duration: 1800s (30 min)
+ * - Automatic outlet selection: 10th percentile
+ */
 SimulationEngine::SimulationEngine(QObject *parent)
     : QObject(parent),
     nx(0), ny(0),
@@ -38,6 +65,21 @@ SimulationEngine::SimulationEngine(QObject *parent)
 {
 }
 
+/**
+ * @brief Loads and processes a Digital Elevation Model (DEM) from file
+ * @param filename Path to the DEM file (supports GeoTIFF and CSV formats)
+ * @return bool True if loading successful, false otherwise
+ * 
+ * Supported file formats:
+ * - GeoTIFF (.tif, .tiff): Preserves geospatial information and resolution
+ * - CSV (.csv): Simple grid format with elevation values
+ * 
+ * Processing steps:
+ * 1. Reads elevation data and grid dimensions
+ * 2. Extracts resolution from GeoTIFF metadata if available
+ * 3. Handles NoData values and invalid cells
+ * 4. Initializes water depth grid and outlet cells
+ */
 bool SimulationEngine::loadDEM(const QString &filename)
 {
     // Determine file type based on extension
@@ -241,36 +283,72 @@ bool SimulationEngine::loadDEM(const QString &filename)
     return true;
 }
 
+/**
+ * @brief Sets the rainfall rate for simulation
+ * @param rate The rainfall rate in meters per second (m/s)
+ */
 void SimulationEngine::setRainfall(double rate)
 {
     rainfallRate = rate;
 }
 
+/**
+ * @brief Sets Manning's roughness coefficient for flow calculations
+ * @param coefficient Manning's n value, typically between 0.01 and 0.1
+ */
 void SimulationEngine::setManningCoefficient(double coefficient)
 {
     n_manning = coefficient;
 }
 
+/**
+ * @brief Sets the soil infiltration rate
+ * @param rate Infiltration rate in meters per second (m/s)
+ */
 void SimulationEngine::setInfiltrationRate(double rate)
 {
     Ks = rate;
 }
 
+/**
+ * @brief Sets the minimum water depth threshold for flow calculations
+ * @param depth Minimum water depth in meters (m)
+ * 
+ * Water depths below this threshold are considered negligible
+ * to improve numerical stability and performance
+ */
 void SimulationEngine::setMinWaterDepth(double depth)
 {
     min_depth = depth;
 }
 
+/**
+ * @brief Sets the spatial resolution of the simulation grid
+ * @param res Cell size in meters (m)
+ * 
+ * For GeoTIFF files, this is typically overridden by the file's metadata
+ */
 void SimulationEngine::setCellResolution(double res)
 {
     resolution = res;
 }
 
+/**
+ * @brief Sets total simulation duration
+ * @param time Duration in seconds (s)
+ */
 void SimulationEngine::setTotalTime(double time)
 {
     totalTime = time;
 }
 
+/**
+ * @brief Configures automatic outlet selection based on elevation percentile
+ * @param percentile Value between 0 and 1 indicating the fraction of lowest elevation cells to select
+ * 
+ * Automatically selects drainage outlet cells along the domain boundary based on elevation.
+ * A percentile of 0.1 (default) selects the lowest 10% of boundary cells as outlets.
+ */
 void SimulationEngine::configureOutletsByPercentile(double percentile)
 {
     if (percentile <= 0.0 || percentile >= 1.0) {
@@ -283,6 +361,13 @@ void SimulationEngine::configureOutletsByPercentile(double percentile)
     computeOutletCellsByPercentile(percentile);
 }
 
+/**
+ * @brief Sets manually selected outlet cells for drainage
+ * @param cells Vector of QPoint coordinates representing user-selected outlet positions
+ * 
+ * Replaces automatic outlet selection with user-defined outlets.
+ * If no valid cells are provided, reverts to automatic selection.
+ */
 void SimulationEngine::setManualOutletCells(const QVector<QPoint> &cells)
 {
     if (cells.isEmpty() || nx <= 0 || ny <= 0)
@@ -312,6 +397,16 @@ void SimulationEngine::setManualOutletCells(const QVector<QPoint> &cells)
     }
 }
 
+/**
+ * @brief Initialize simulation state and validate parameters
+ * @return bool True if initialization successful, false if validation fails
+ *
+ * Performs the following initialization steps:
+ * 1. Validates grid dimensions and simulation parameters
+ * 2. Resets simulation time and water depth grid
+ * 3. Initializes drainage tracking for all outlet cells
+ * 4. Sets up time-varying rainfall if enabled
+ */
 bool SimulationEngine::initSimulation()
 {
     // Make basic validation checks
@@ -405,123 +500,16 @@ bool SimulationEngine::initSimulation()
     return true;
 }
 
-// Compute outletCells based on lowest elevation percentile along the entire boundary
-void SimulationEngine::computeOutletCellsByPercentile(double percentile)
-{
-    outletCells.clear();
-    if (nx <= 0 || ny <= 0)
-        return;
-
-    std::vector<std::pair<double, int>> boundaryCells; // Store <elevation, 1D_index>
-
-    // Iterate through all boundary cells (top, bottom, left, right)
-    for (int i = 0; i < nx; ++i) {
-        for (int j = 0; j < ny; ++j) {
-            // Check if the cell is on the boundary
-            if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1) {
-                // Check if it's a valid DEM cell (not no-data)
-                if (dem[i][j] > -999998.0) {
-                    int index1D = i * ny + j;
-                    boundaryCells.push_back({dem[i][j], index1D});
-                }
-            }
-        }
-    }
-
-    if (boundaryCells.empty()) {
-        qDebug() << "No valid boundary cells found for automatic outlet selection.";
-        // As a fallback, maybe select the globally lowest cell?
-        double minElev = std::numeric_limits<double>::max();
-        int minIdx = -1;
-        for(int i=0; i<nx; ++i) {
-            for(int j=0; j<ny; ++j) {
-                if (dem[i][j] > -999998.0 && dem[i][j] < minElev) {
-                    minElev = dem[i][j];
-                    minIdx = i * ny + j;
-                }
-            }
-        }
-        if(minIdx != -1) outletCells.push_back(minIdx);
-        return;
-    }
-
-    // Sort boundary cells by elevation
-    std::sort(boundaryCells.begin(), boundaryCells.end());
-
-    // Determine the number of outlets based on percentile
-    int numOutlets = std::max(1, (int)(percentile * boundaryCells.size()));
-    // Ensure at least one outlet, but cap at a reasonable number (e.g., 10% of boundary, or 50)
-    numOutlets = std::min({numOutlets, (int)(boundaryCells.size() * 0.1), 50}); 
-    numOutlets = std::max(1, numOutlets); // Ensure at least one
-
-    qDebug() << "Selecting top" << numOutlets << "lowest boundary cells as automatic outlets.";
-
-    // Add the lowest 'numOutlets' cells to outletCells
-    for (int k = 0; k < numOutlets; ++k) {
-        outletCells.push_back(boundaryCells[k].second);
-        int i = boundaryCells[k].second / ny;
-        int j = boundaryCells[k].second % ny;
-        qDebug() << "Added automatic outlet at:" << i << j << "with elevation:" << boundaryCells[k].first;
-    }
-
-    // Optional: Ensure some minimum spacing between outlets if they are too clustered?
-    // (Could be added later if needed)
-
-    qDebug() << "Selected" << outletCells.size() << "automatic outlet cells along boundary.";
-}
-
-void SimulationEngine::setTimeVaryingRainfall(bool enabled)
-{
-    useTimeVaryingRainfall = enabled;
-}
-
-void SimulationEngine::setRainfallSchedule(const QVector<QPair<double, double>>& schedule)
-{
-    // Clear existing schedule
-    rainfallSchedule.clear();
-    
-    // Copy and sort the schedule by timestamp
-    rainfallSchedule = schedule;
-    std::sort(rainfallSchedule.begin(), rainfallSchedule.end(), 
-              [](const QPair<double, double>& a, const QPair<double, double>& b) {
-                  return a.first < b.first;
-              });
-    
-    // Ensure first entry is at time 0
-    if (!rainfallSchedule.isEmpty() && rainfallSchedule.first().first > 0) {
-        rainfallSchedule.prepend(qMakePair(0.0, rainfallSchedule.first().second));
-    }
-    
-    // If schedule is empty, add a single entry with the current constant rate
-    if (rainfallSchedule.isEmpty()) {
-        rainfallSchedule.append(qMakePair(0.0, rainfallRate));
-    }
-}
-
-double SimulationEngine::getCurrentRainfallRate() const
-{
-    if (!useTimeVaryingRainfall || rainfallSchedule.isEmpty()) {
-        return rainfallRate; // Fall back to constant rate
-    }
-    
-    // Find the applicable rainfall rate for the current time
-    double currentRate = rainfallSchedule.first().second; // Default to first rate
-    
-    for (int i = 0; i < rainfallSchedule.size(); i++) {
-        const QPair<double, double>& entry = rainfallSchedule[i];
-        
-        // If this entry's time is in the future, use the previous entry's rate
-        if (entry.first > time) {
-            break;
-        }
-        
-        // Update current rate
-        currentRate = entry.second;
-    }
-    
-    return currentRate;
-}
-
+/**
+ * @brief Advances simulation by one time step
+ * 
+ * Main simulation loop that performs:
+ * 1. Rainfall and infiltration calculations
+ * 2. Flow routing using Manning's equation
+ * 3. Mass conservation with adaptive time stepping
+ * 4. Depression filling and flow accumulation
+ * 5. Drainage calculation at outlet cells
+ */
 void SimulationEngine::stepSimulation()
 {
     if (nx <= 0 || ny <= 0)
@@ -739,6 +727,17 @@ QVector<QPair<double, double>> SimulationEngine::getDrainageTimeSeries() const
     return drainageTimeSeries;
 }
 
+/**
+ * @brief Generates visualization of current water depth state
+ * @return QImage Colored visualization of water depths
+ * 
+ * Visualization features:
+ * - White to blue gradient representing water depth
+ * - Gray cells for no-data regions
+ * - Optional grid overlay for cell identification
+ * - Coordinate rulers for spatial reference
+ * - Dynamic color scaling based on maximum water depth
+ */
 QImage SimulationEngine::getWaterDepthImage() const
 {
     if (nx <= 0 || ny <= 0)
@@ -849,6 +848,19 @@ QImage SimulationEngine::getWaterDepthImage() const
     return img;
 }
 
+/**
+ * @brief Creates a preview visualization of the DEM with interactive features
+ * @return QImage Enhanced visualization of the terrain elevation
+ * 
+ * Visualization components:
+ * - Terrain coloring using elevation-based gradient
+ * - Manual and automatic outlet markers
+ * - Interactive grid overlay
+ * - Coordinate system and rulers
+ * - Control instructions
+ * - Comprehensive legend showing elevation range
+ * - Resolution and outlet count information
+ */
 QImage SimulationEngine::getDEMPreviewImage() const
 {
     if (nx <= 0 || ny <= 0)
@@ -1048,6 +1060,164 @@ QImage SimulationEngine::getDEMPreviewImage() const
     return img;
 }
 
+/**
+ * @brief Generates visualization of computed flow accumulation paths
+ * @return QImage Visualization showing water flow patterns
+ * 
+ * Visualization features:
+ * - Logarithmic color scale for flow magnitude
+ * - Terrain coloring for context in low-flow areas
+ * - Highlighted outlet positions
+ * - Grid overlay for spatial reference
+ * - Legend showing flow intensity scale
+ * - Special coloring for no-data and outlet cells
+ */
+QImage SimulationEngine::getFlowAccumulationImage() const
+{
+    if (nx <= 0 || ny <= 0 || flowAccumulationGrid.empty())
+        return QImage();
+
+    // Create an image with dimensions matching the DEM grid
+    QImage img(ny, nx, QImage::Format_RGB32);
+    img.fill(Qt::white);
+
+    // Find the max flow accumulation value for scaling
+    double maxFlow = 0.0;
+    for (int i = 0; i < nx; i++) {
+        for (int j = 0; j < ny; j++) {
+            if (dem[i][j] > -999998.0) {
+                maxFlow = std::max(maxFlow, flowAccumulationGrid[i][j]);
+            }
+        }
+    }
+    
+    // Use log scale for better visualization of flow accumulation
+    maxFlow = std::log(maxFlow + 1.0);
+    
+    // Create a color gradient to visualize flow paths
+    for (int i = 0; i < nx; i++) {
+        for (int j = 0; j < ny; j++) {
+            if (dem[i][j] <= -999998.0) {
+                // No-data cells are light gray
+                img.setPixel(j, i, qRgb(200, 200, 200));
+                continue;
+            }
+            
+            double flowValue = flowAccumulationGrid[i][j];
+            
+            // Use log scale to better visualize the full range of values
+            double normalizedFlow = (flowValue > 0) ? 
+                std::log(flowValue + 1.0) / maxFlow : 0.0;
+            
+            // Create a blue gradient for flow paths
+            int blue = int(255 * normalizedFlow);
+            int green = int(150 * normalizedFlow);
+            int red = 50;
+            
+            // Add terrain coloring for context
+            if (normalizedFlow < 0.2) {
+                // For low flow areas, use terrain coloring (green to brown gradient)
+                double normalizedElev = (dem[i][j] - dem[outletRow][j]) / 10.0;
+                normalizedElev = std::max(0.0, std::min(1.0, normalizedElev));
+                
+                red = int(155 + 100 * normalizedElev);
+                green = int(200 - 60 * normalizedElev);
+                blue = int(50 + 40 * normalizedElev);
+            }
+            
+            // Mark outlet cells with a distinctive color
+            bool isOutlet = false;
+            for (const auto& idx : outletCells) {
+                int oi = idx / ny;
+                int oj = idx % ny;
+                if (i == oi && j == oj) {
+                    isOutlet = true;
+                    break;
+                }
+            }
+            
+            if (isOutlet) {
+                red = 255;
+                green = 50;
+                blue = 50;
+            }
+            
+            img.setPixel(j, i, qRgb(red, green, blue));
+        }
+    }
+
+    // Draw gridlines similar to the DEM preview
+    if (showGrid) {
+        QPainter painter(&img);
+        
+        // Use lighter, more subtle grid lines
+        painter.setPen(QPen(QColor(0, 0, 0, 40), 0.5));
+        
+        // Adjust grid interval based on resolution
+        int interval = gridInterval;
+        if (resolution > 5.0) {
+            interval = std::max(1, gridInterval / 2);
+        }
+        
+        // Draw horizontal gridlines
+        for (int i = 0; i <= nx; i += interval) {
+            painter.drawLine(0, i, ny, i);
+        }
+        
+        // Draw vertical gridlines
+        for (int j = 0; j <= ny; j += interval) {
+            painter.drawLine(j, 0, j, nx);
+        }
+    }
+    
+    // Add a legend
+    QPainter painter(&img);
+    int legendWidth = 30;
+    int legendHeight = img.height() / 3;
+    int legendX = img.width() - legendWidth - 10;
+    int legendY = 10;
+    
+    // Draw flow accumulation color bar
+    for (int y = 0; y < legendHeight; y++) {
+        double normalizedFlow = 1.0 - double(y) / legendHeight; // 1 at top, 0 at bottom
+        
+        int blue = int(255 * normalizedFlow);
+        int green = int(150 * normalizedFlow);
+        int red = 50;
+        
+        painter.setPen(QColor(red, green, blue));
+        painter.drawLine(legendX, legendY + y, legendX + legendWidth, legendY + y);
+    }
+    
+    // Add legend labels
+    QFont font = painter.font();
+    font.setPointSize(9);
+    painter.setFont(font);
+    
+    painter.setPen(Qt::black);
+    painter.drawText(legendX - 5, legendY - 5, "Flow Paths");
+    painter.drawText(legendX + legendWidth + 2, legendY + 15, "High");
+    painter.drawText(legendX + legendWidth + 2, legendY + legendHeight - 5, "Low");
+    
+    // Add a title
+    font.setPointSize(12);
+    font.setBold(true);
+    painter.setFont(font);
+    painter.drawText(10, 20, "Flow Accumulation Paths");
+    
+    return img;
+}
+
+/**
+ * @brief Get accumulated drainage volume for each outlet cell
+ * @return QMap<QPoint, double> Map of outlet positions to their cumulative drainage volumes
+ * 
+ * Tracks the total volume of water that has passed through each outlet cell
+ * throughout the simulation. Used for:
+ * - Individual outlet performance analysis
+ * - Drainage network efficiency assessment
+ * - Comparative analysis between outlets
+ */
 QMap<QPoint, double> SimulationEngine::getPerOutletDrainage() const
 {
     return perOutletDrainage;
@@ -1071,6 +1241,16 @@ QVector<QPoint> SimulationEngine::getAutomaticOutletCells() const
     return result;
 }
 
+/**
+ * @brief Routes water flow from higher to lower elevations towards outlet cells
+ *
+ * Algorithm steps:
+ * 1. Creates flow accumulation grid for main drainage paths
+ * 2. Fills depressions to ensure continuous flow
+ * 3. Calculates flow directions based on steepest descent
+ * 4. Creates multiple drainage paths per outlet
+ * 5. Applies adaptive flow routing with reduced aggressiveness
+ */
 void SimulationEngine::routeWaterToOutlets()
 {
     if (outletCells.empty() || nx <= 0 || ny <= 0)
@@ -1342,142 +1522,168 @@ void SimulationEngine::routeWaterToOutlets()
     }
 }
 
-QImage SimulationEngine::getFlowAccumulationImage() const
+/**
+ * @brief Automatically selects outlet cells based on elevation percentile
+ * @param percentile The percentile threshold for selecting lowest elevation cells (0-1)
+ * 
+ * Selection process:
+ * 1. Identifies valid boundary cells
+ * 2. Sorts cells by elevation
+ * 3. Selects lowest cells up to specified percentile
+ * 4. Applies minimum spacing constraints
+ * 5. Falls back to global minimum if no valid boundary cells
+ */
+void SimulationEngine::computeOutletCellsByPercentile(double percentile)
 {
-    if (nx <= 0 || ny <= 0 || flowAccumulationGrid.empty())
-        return QImage();
+    outletCells.clear();
+    if (nx <= 0 || ny <= 0)
+        return;
 
-    // Create an image with dimensions matching the DEM grid
-    QImage img(ny, nx, QImage::Format_RGB32);
-    img.fill(Qt::white);
+    std::vector<std::pair<double, int>> boundaryCells; // Store <elevation, 1D_index>
 
-    // Find the max flow accumulation value for scaling
-    double maxFlow = 0.0;
-    for (int i = 0; i < nx; i++) {
-        for (int j = 0; j < ny; j++) {
-            if (dem[i][j] > -999998.0) {
-                maxFlow = std::max(maxFlow, flowAccumulationGrid[i][j]);
-            }
-        }
-    }
-    
-    // Use log scale for better visualization of flow accumulation
-    maxFlow = std::log(maxFlow + 1.0);
-    
-    // Create a color gradient to visualize flow paths
-    for (int i = 0; i < nx; i++) {
-        for (int j = 0; j < ny; j++) {
-            if (dem[i][j] <= -999998.0) {
-                // No-data cells are light gray
-                img.setPixel(j, i, qRgb(200, 200, 200));
-                continue;
-            }
-            
-            double flowValue = flowAccumulationGrid[i][j];
-            
-            // Use log scale to better visualize the full range of values
-            double normalizedFlow = (flowValue > 0) ? 
-                std::log(flowValue + 1.0) / maxFlow : 0.0;
-            
-            // Create a blue gradient for flow paths
-            int blue = int(255 * normalizedFlow);
-            int green = int(150 * normalizedFlow);
-            int red = 50;
-            
-            // Add terrain coloring for context
-            if (normalizedFlow < 0.2) {
-                // For low flow areas, use terrain coloring (green to brown gradient)
-                double normalizedElev = (dem[i][j] - dem[outletRow][j]) / 10.0;
-                normalizedElev = std::max(0.0, std::min(1.0, normalizedElev));
-                
-                red = int(155 + 100 * normalizedElev);
-                green = int(200 - 60 * normalizedElev);
-                blue = int(50 + 40 * normalizedElev);
-            }
-            
-            // Mark outlet cells with a distinctive color
-            bool isOutlet = false;
-            for (const auto& idx : outletCells) {
-                int oi = idx / ny;
-                int oj = idx % ny;
-                if (i == oi && j == oj) {
-                    isOutlet = true;
-                    break;
+    // Iterate through all boundary cells (top, bottom, left, right)
+    for (int i = 0; i < nx; ++i) {
+        for (int j = 0; j < ny; ++j) {
+            // Check if the cell is on the boundary
+            if (i == 0 || i == nx - 1 || j == 0 || j == ny - 1) {
+                // Check if it's a valid DEM cell (not no-data)
+                if (dem[i][j] > -999998.0) {
+                    int index1D = i * ny + j;
+                    boundaryCells.push_back({dem[i][j], index1D});
                 }
             }
-            
-            if (isOutlet) {
-                red = 255;
-                green = 50;
-                blue = 50;
-            }
-            
-            img.setPixel(j, i, qRgb(red, green, blue));
         }
     }
 
-    // Draw gridlines similar to the DEM preview
-    if (showGrid) {
-        QPainter painter(&img);
-        
-        // Use lighter, more subtle grid lines
-        painter.setPen(QPen(QColor(0, 0, 0, 40), 0.5));
-        
-        // Adjust grid interval based on resolution
-        int interval = gridInterval;
-        if (resolution > 5.0) {
-            interval = std::max(1, gridInterval / 2);
+    if (boundaryCells.empty()) {
+        qDebug() << "No valid boundary cells found for automatic outlet selection.";
+        // As a fallback, maybe select the globally lowest cell?
+        double minElev = std::numeric_limits<double>::max();
+        int minIdx = -1;
+        for(int i=0; i<nx; ++i) {
+            for(int j=0; j<ny; ++j) {
+                if (dem[i][j] > -999998.0 && dem[i][j] < minElev) {
+                    minElev = dem[i][j];
+                    minIdx = i * ny + j;
+                }
+            }
         }
-        
-        // Draw horizontal gridlines
-        for (int i = 0; i <= nx; i += interval) {
-            painter.drawLine(0, i, ny, i);
-        }
-        
-        // Draw vertical gridlines
-        for (int j = 0; j <= ny; j += interval) {
-            painter.drawLine(j, 0, j, nx);
-        }
+        if(minIdx != -1) outletCells.push_back(minIdx);
+        return;
     }
-    
-    // Add a legend
-    QPainter painter(&img);
-    int legendWidth = 30;
-    int legendHeight = img.height() / 3;
-    int legendX = img.width() - legendWidth - 10;
-    int legendY = 10;
-    
-    // Draw flow accumulation color bar
-    for (int y = 0; y < legendHeight; y++) {
-        double normalizedFlow = 1.0 - double(y) / legendHeight; // 1 at top, 0 at bottom
-        
-        int blue = int(255 * normalizedFlow);
-        int green = int(150 * normalizedFlow);
-        int red = 50;
-        
-        painter.setPen(QColor(red, green, blue));
-        painter.drawLine(legendX, legendY + y, legendX + legendWidth, legendY + y);
+
+    // Sort boundary cells by elevation
+    std::sort(boundaryCells.begin(), boundaryCells.end());
+
+    // Determine the number of outlets based on percentile
+    int numOutlets = std::max(1, (int)(percentile * boundaryCells.size()));
+    // Ensure at least one outlet, but cap at a reasonable number (e.g., 10% of boundary, or 50)
+    numOutlets = std::min({numOutlets, (int)(boundaryCells.size() * 0.1), 50}); 
+    numOutlets = std::max(1, numOutlets); // Ensure at least one
+
+    qDebug() << "Selecting top" << numOutlets << "lowest boundary cells as automatic outlets.";
+
+    // Add the lowest 'numOutlets' cells to outletCells
+    for (int k = 0; k < numOutlets; ++k) {
+        outletCells.push_back(boundaryCells[k].second);
+        int i = boundaryCells[k].second / ny;
+        int j = boundaryCells[k].second % ny;
+        qDebug() << "Added automatic outlet at:" << i << j << "with elevation:" << boundaryCells[k].first;
     }
-    
-    // Add legend labels
-    QFont font = painter.font();
-    font.setPointSize(9);
-    painter.setFont(font);
-    
-    painter.setPen(Qt::black);
-    painter.drawText(legendX - 5, legendY - 5, "Flow Paths");
-    painter.drawText(legendX + legendWidth + 2, legendY + 15, "High");
-    painter.drawText(legendX + legendWidth + 2, legendY + legendHeight - 5, "Low");
-    
-    // Add a title
-    font.setPointSize(12);
-    font.setBold(true);
-    painter.setFont(font);
-    painter.drawText(10, 20, "Flow Accumulation Paths");
-    
-    return img;
+
+    // Optional: Ensure some minimum spacing between outlets if they are too clustered?
+    // (Could be added later if needed)
+
+    qDebug() << "Selected" << outletCells.size() << "automatic outlet cells along boundary.";
 }
 
+/**
+ * @brief Sets whether to use time-varying rainfall patterns
+ * @param enabled True to enable time-varying rainfall, false for constant rate
+ * 
+ * When enabled, rainfall rates are interpolated from a user-defined schedule.
+ * When disabled, uses a constant rainfall rate for the entire simulation.
+ */
+void SimulationEngine::setTimeVaryingRainfall(bool enabled)
+{
+    useTimeVaryingRainfall = enabled;
+}
+
+/**
+ * @brief Sets the rainfall schedule for time-varying simulation
+ * @param schedule Vector of time-rate pairs (time in seconds, rate in m/s)
+ * 
+ * Schedule format:
+ * - First entry should be at time 0
+ * - Times should be in ascending order
+ * - Rates are interpolated between schedule points
+ * - If empty, uses constant rainfall rate
+ */
+void SimulationEngine::setRainfallSchedule(const QVector<QPair<double, double>>& schedule)
+{
+    // Clear existing schedule
+    rainfallSchedule.clear();
+    
+    // Copy and sort the schedule by timestamp
+    rainfallSchedule = schedule;
+    std::sort(rainfallSchedule.begin(), rainfallSchedule.end(), 
+              [](const QPair<double, double>& a, const QPair<double, double>& b) {
+                  return a.first < b.first;
+              });
+    
+    // Ensure first entry is at time 0
+    if (!rainfallSchedule.isEmpty() && rainfallSchedule.first().first > 0) {
+        rainfallSchedule.prepend(qMakePair(0.0, rainfallSchedule.first().second));
+    }
+    
+    // If schedule is empty, add a single entry with the current constant rate
+    if (rainfallSchedule.isEmpty()) {
+        rainfallSchedule.append(qMakePair(0.0, rainfallRate));
+    }
+}
+
+/**
+ * @brief Gets the current rainfall rate based on simulation time
+ * @return Current rainfall rate in m/s
+ * 
+ * For time-varying rainfall:
+ * - Interpolates between schedule points
+ * - Returns constant rate if schedule is empty
+ * - Uses first rate before first time point
+ * - Uses last rate after last time point
+ */
+double SimulationEngine::getCurrentRainfallRate() const
+{
+    if (!useTimeVaryingRainfall || rainfallSchedule.isEmpty()) {
+        return rainfallRate; // Fall back to constant rate
+    }
+    
+    // Find the applicable rainfall rate for the current time
+    double currentRate = rainfallSchedule.first().second; // Default to first rate
+    
+    for (int i = 0; i < rainfallSchedule.size(); i++) {
+        const QPair<double, double>& entry = rainfallSchedule[i];
+        
+        // If this entry's time is in the future, use the previous entry's rate
+        if (entry.first > time) {
+            break;
+        }
+        
+        // Update current rate
+        currentRate = entry.second;
+    }
+    
+    return currentRate;
+}
+
+/**
+ * @brief Computes default outlet cells using configured percentile
+ * 
+ * Uses the default percentile value (typically 10%) to:
+ * 1. Find lowest elevation boundary cells
+ * 2. Select appropriate number of outlet points
+ * 3. Set up automatic drainage configuration
+ */
 void SimulationEngine::computeDefaultAutomaticOutletCells()
 {
     computeOutletCellsByPercentile(outletPercentile);

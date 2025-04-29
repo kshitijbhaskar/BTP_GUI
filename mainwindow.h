@@ -22,9 +22,44 @@
 #include <QTableWidget>
 #include "SimulationEngine.h"
 
-// Forward declaration of ClickableLabel
+/**
+ * @brief Custom QLabel subclass that handles mouse interactions for DEM visualization
+ * 
+ * Implements mouse events for:
+ * - Click handling (outlet selection)
+ * - Drag handling (panning)
+ * - Wheel handling (zooming)
+ * - Double click (view reset)
+ */
 class ClickableLabel;
 
+/**
+ * @brief Main application window managing UI and simulation control
+ * 
+ * The MainWindow class provides:
+ * 1. User Interface Management
+ *    - Parameter input panels
+ *    - Simulation controls
+ *    - Visualization displays
+ *    - Outlet selection interface
+ * 
+ * 2. Simulation Control
+ *    - DEM loading and validation
+ *    - Parameter synchronization
+ *    - Time step execution
+ *    - Results visualization
+ * 
+ * 3. Interactive Features
+ *    - Manual outlet selection
+ *    - Pan and zoom controls
+ *    - Time-varying rainfall configuration
+ *    - Grid and ruler customization
+ * 
+ * 4. Data Export
+ *    - Drainage time series
+ *    - Per-outlet statistics
+ *    - Visualization snapshots
+ */
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -34,18 +69,36 @@ public:
     ~MainWindow();
 
 protected:
-    // Handle window resize events
+    /**
+     * @brief Handles window resize events to maintain visualization aspect ratios
+     * Updates the display layout and recalculates visualization scaling
+     */
     void resizeEvent(QResizeEvent *event) override;
 
 private slots:
-    void onSelectDEM();
-    void onStartSimulation();
-    void onPauseSimulation();
-    void onStopSimulation();
-    void onSimulationStep();
-    void onOutletMethodChanged(int index);
-    void updateUIState();
-    void onManualOutletCellsToggled(bool checked);
+    // DEM and Simulation Control
+    void onSelectDEM();              ///< Open file dialog for DEM selection
+    void onStartSimulation();        ///< Initialize and start simulation
+    void onPauseSimulation();        ///< Pause ongoing simulation
+    void onStopSimulation();         ///< Stop and reset simulation
+    void onSimulationStep();         ///< Process one simulation timestep
+    
+    // UI State Management
+    void onOutletMethodChanged(int index); ///< Switch between auto/manual outlets
+    void updateUIState();            ///< Sync UI with simulation state
+    void onManualOutletCellsToggled(bool checked);  ///< Enable/disable manual selection
+    
+    // Visualization Control
+    void onToggleGrid(bool checked);         ///< Show/hide grid overlay
+    void onToggleRulers(bool checked);       ///< Show/hide coordinate rulers
+    void onGridIntervalChanged(int value); ///< Update grid line spacing
+    
+    // Time-varying Rainfall Management
+    void onTimeVaryingRainfallToggled(bool checked);  ///< Enable/disable schedule
+    void onAddRainfallRow();         ///< Add new rainfall schedule entry
+    void onRemoveRainfallRow();      ///< Remove selected schedule entry
+    void updateRainfallSchedule();    ///< Sync schedule with engine
+
     void onSaveResults();
     void onClearOutlets();
     void onSelectOutlet();
@@ -53,16 +106,6 @@ private slots:
     void updateVisualization();
     void resetVisualizationView();
     void returnToPreviousTab();
-    // Display toggle options
-    void onToggleGrid(bool checked);
-    void onToggleRulers(bool checked);
-    void onGridIntervalChanged(int value);
-    // Time-varying rainfall slots
-    void onTimeVaryingRainfallToggled(bool checked);
-    void onAddRainfallRow();
-    void onRemoveRainfallRow();
-    void updateRainfallSchedule();
-    // Resolution change handling
     void onResolutionChanged(double newResolution);
 
 private:
@@ -176,6 +219,82 @@ private:
     void onResultDisplayClicked(QPoint pos);
     void panVisualization(QPoint delta);
     void zoomVisualization(int delta);
+
+    /**
+     * @brief Validates simulation parameters before starting
+     * @return bool True if all parameters are valid, false otherwise
+     * 
+     * Checks:
+     * - DEM file is loaded
+     * - Resolution is appropriate
+     * - Rainfall configuration is valid
+     * - At least one outlet is defined
+     * - Time settings are consistent
+     */
+    bool validateSimulationParameters();
+
+    /**
+     * @brief Validates rainfall schedule entries
+     * @return QString Empty if valid, error message if invalid
+     * 
+     * Validates:
+     * - Time values are ascending
+     * - First entry starts at t=0
+     * - No negative rainfall rates
+     * - Times within simulation duration
+     */
+    QString validateRainfallSchedule();
+
+    /**
+     * @brief Validates manual outlet cell selections
+     * @return bool True if outlets are valid, false otherwise
+     * 
+     * Checks:
+     * - Outlets within DEM bounds
+     * - No duplicate positions
+     * - Valid elevation at positions
+     * - Sufficient spacing between outlets
+     */
+    bool validateOutletSelections();
+
+    /**
+     * @brief Exports simulation results to file
+     * @return bool True if export successful, false otherwise
+     * 
+     * Exports:
+     * - Time series of drainage volumes
+     * - Per-outlet drainage data
+     * - Final water depth grid
+     * - Flow accumulation paths
+     * - Simulation parameters used
+     */
+    bool exportResults();
+
+    /**
+     * @brief Captures and saves visualization images
+     * @param type Type of visualization (water depth, flow paths, etc.)
+     * @return QString Path to saved image or error message
+     * 
+     * Features:
+     * - High-resolution capture
+     * - Optional grid overlay
+     * - Scale bar and legend
+     * - Timestamp and parameter overlay
+     */
+    QString saveVisualization(const QString& type);
+
+    /**
+     * @brief Generates summary statistics for the simulation
+     * @return QString Formatted statistics text
+     * 
+     * Statistics include:
+     * - Total drainage volume
+     * - Peak flow rates
+     * - Drainage efficiency per outlet
+     * - Water balance components
+     * - Runtime performance metrics
+     */
+    QString generateStatistics();
 };
 
 #endif // MAINWINDOW_H

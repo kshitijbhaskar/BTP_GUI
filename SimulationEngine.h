@@ -10,158 +10,272 @@
 #include <QPair>
 #include <QMap>
 
-// GDAL includes might go here, but often better kept in .cpp
-// Forward declarations if needed (unlikely for basic usage)
-// class GDALDataset; 
-
 // Define operator< for QPoint to use with QMap
-// This is needed because QPoint doesn't have a built-in operator<
+// This enables QPoint to be used as a key in QMap for tracking per-outlet drainage
 inline bool operator<(const QPoint& a, const QPoint& b) {
     if (a.x() != b.x())
         return a.x() < b.x();
     return a.y() < b.y();
 }
 
+/**
+ * @brief Core simulation engine for hydrological modeling
+ * 
+ * Implements a grid-based hydrological simulation that:
+ * 1. Processes Digital Elevation Models (DEM)
+ * 2. Simulates surface water flow using Manning's equation
+ * 3. Handles both constant and time-varying rainfall
+ * 4. Supports automatic and manual outlet placement
+ * 5. Provides real-time visualization
+ * 
+ * Key Features:
+ * - Mass conservation enforcement
+ * - Depression filling for continuous flow
+ * - Adaptive time stepping
+ * - Multi-outlet drainage tracking
+ * - Interactive visualization generation
+ */
 class SimulationEngine : public QObject
 {
     Q_OBJECT
 
 public:
     explicit SimulationEngine(QObject *parent = nullptr);
+    ~SimulationEngine() = default;
 
-    // Load DEM data from CSV or GeoTIFF file.
-    // The CSV must contain only elevation values arranged as rows.
-    // GeoTIFF files are read using GDAL.
+    /**
+     * @brief Loads and validates a DEM file
+     * @param filename Path to DEM file (.tif or .csv)
+     * @return true if loading succeeded
+     */
     bool loadDEM(const QString &filename);
 
-    // Parameter setters
-    void setRainfall(double rate);
-    void setManningCoefficient(double coefficient);
-    void setInfiltrationRate(double rate);
-    void setMinWaterDepth(double depth);
-    // Resolution is now often set based on the loaded DEM (especially for GeoTIFF)
-    void setCellResolution(double res);
-    void setTotalTime(double time);
-    
-    // Time-varying rainfall methods
-    void setTimeVaryingRainfall(bool enabled);
-    bool isTimeVaryingRainfall() const { return useTimeVaryingRainfall; }
-    void setRainfallSchedule(const QVector<QPair<double, double>>& schedule);
-    QVector<QPair<double, double>> getRainfallSchedule() const { return rainfallSchedule; }
-    double getCurrentRainfallRate() const;
-
-    // Outlet configuration methods
-    void configureOutletsByPercentile(double percentile);
-    void setManualOutletCells(const QVector<QPoint> &cells);
-    double getOutletPercentile() const { return outletPercentile; }
-
-    // Initialize simulation (reset time, water depth grid, etc.)
+    /**
+     * @brief Initializes simulation state
+     * @return true if initialization succeeded
+     */
     bool initSimulation();
 
-    // Perform one simulation step
+    /**
+     * @brief Advances simulation by one time step
+     * 
+     * Core simulation loop that:
+     * 1. Updates rainfall and infiltration
+     * 2. Computes water flow between cells
+     * 3. Updates drainage volumes
+     * 4. Generates visualization data
+     */
     void stepSimulation();
 
-    // Return the current simulation time in seconds
+    // Getters and setters for simulation parameters
+    /**
+     * @brief Sets Manning's roughness coefficient
+     * @param n Manning's n value (typical range: 0.01-0.1)
+     */
+    void setManningCoefficient(double n);
+
+    /**
+     * @brief Sets soil infiltration rate
+     * @param ks Saturated hydraulic conductivity (m/s)
+     */
+    void setInfiltrationRate(double ks);
+
+    /**
+     * @brief Sets constant rainfall rate
+     * @param rate Rainfall intensity (m/s)
+     */
+    void setRainfallRate(double rate);
+
+    /**
+     * @brief Sets minimum water depth for simulation
+     * @param depth Minimum water depth (m)
+     */
+    void setMinWaterDepth(double depth);
+
+    /**
+     * @brief Sets cell resolution for the grid
+     * @param res Cell resolution (m)
+     */
+    void setCellResolution(double res);
+
+    /**
+     * @brief Sets total simulation duration
+     * @param time Total simulation time (seconds)
+     */
+    void setTotalTime(double time);
+
+    /**
+     * @brief Configures outlets based on percentile
+     * @param percentile Percentile for outlet selection
+     */
+    void configureOutletsByPercentile(double percentile);
+
+    /**
+     * @brief Sets manual outlet cells
+     * @param cells Vector of outlet cell coordinates
+     */
+    void setManualOutletCells(const QVector<QPoint> &cells);
+
+    /**
+     * @brief Sets rainfall schedule
+     * @param schedule Vector of time-rainfall pairs
+     */
+    void setRainfallSchedule(const QVector<QPair<double, double>> &schedule);
+
+    /**
+     * @brief Enables or disables time-varying rainfall
+     * @param enabled True to enable, false to disable
+     */
+    void setTimeVaryingRainfall(bool enabled);
+
+    /**
+     * @brief Gets current simulation time
+     * @return Elapsed simulation time (seconds)
+     */
     double getCurrentTime() const { return time; }
 
-    // Total simulation time
+    /**
+     * @brief Gets total simulation duration
+     * @return Total simulation time (seconds)
+     */
     double getTotalTime() const { return totalTime; }
 
-    // Return the total drainage volume computed
-    double getTotalDrainage() const;
+    /**
+     * @brief Gets total drainage volume
+     * @return Total drained water volume (m³)
+     */
+    double getTotalDrainage() const { return drainageVolume; }
 
-    // Return the drainage time series data (time, volume)
-    QVector<QPair<double, double>> getDrainageTimeSeries() const;
-    
-    // Return the per-outlet drainage data
-    QMap<QPoint, double> getPerOutletDrainage() const;
+    /**
+     * @brief Gets drainage time series
+     * @return Vector of time-drainage pairs
+     */
+    QVector<QPair<double, double>> getDrainageTimeSeries() const { return drainageTimeSeries; }
 
-    // Create and return a QImage showing the water depth grid.
-    QImage getWaterDepthImage() const;
-    
-    // Create and return a DEM preview image for outlet selection
-    QImage getDEMPreviewImage() const;
-
-    // New: Create and return a flow accumulation visualization image
-    QImage getFlowAccumulationImage() const;
-
-    // Get grid dimensions
-    int getGridWidth() const { return ny; }
-    int getGridHeight() const { return nx; }
-    double getCellResolution() const { return resolution; }
-    
-    // Grid and rulers display settings
-    void setShowGrid(bool show) { showGrid = show; }
-    bool getShowGrid() const { return showGrid; }
-    void setShowRulers(bool show) { showRulers = show; }
-    bool getShowRulers() const { return showRulers; }
-    void setGridInterval(int interval) { gridInterval = interval; }
-    int getGridInterval() const { return gridInterval; }
-    
-    // Get manual outlet cells for UI display
-    QVector<QPoint> getManualOutletCells() const { return manualOutletCells; }
-    
-    // New method to get automatic outlet cells for display purposes
+    /**
+     * @brief Gets automatic outlet cells
+     * @return Vector of automatic outlet cell coordinates
+     */
     QVector<QPoint> getAutomaticOutletCells() const;
 
+    /**
+     * @brief Gets per-outlet drainage volumes
+     * @return Map of outlet coordinates to drainage volumes
+     */
+    QMap<QPoint, double> getPerOutletDrainage() const { return perOutletDrainage; }
+
+    /**
+     * @brief Gets current rainfall rate
+     * @return Current rainfall intensity (m/s)
+     */
+    double getCurrentRainfallRate() const;
+
+    /**
+     * @brief Gets water depth visualization image
+     * @return Water depth image
+     */
+    QImage getWaterDepthImage() const;
+
+    /**
+     * @brief Gets DEM preview image
+     * @return DEM preview image
+     */
+    QImage getDEMPreviewImage() const;
+
+    /**
+     * @brief Gets flow accumulation visualization image
+     * @return Flow accumulation image
+     */
+    QImage getFlowAccumulationImage() const;
+
 signals:
-    // Signal emitted after each simulation step with the current time
+    /**
+     * @brief Emitted when simulation time is updated
+     * @param currentTime Current simulation time
+     * @param totalTime Total simulation time
+     */
     void simulationTimeUpdated(double currentTime, double totalTime);
-    // Signal emitted when the simulation step is complete
+
+    /**
+     * @brief Emitted when a simulation step is completed
+     * @param waterDepthImage Updated water depth visualization
+     */
     void simulationStepCompleted(const QImage& waterDepthImage);
 
+    /**
+     * @brief Emitted when simulation progress changes
+     * @param progress Progress percentage (0-100)
+     */
+    void progressUpdated(int progress);
+
+    /**
+     * @brief Emitted when an error occurs
+     * @param message Error description
+     */
+    void errorOccurred(const QString &message);
+
 private:
-    // Grid dimensions
-    int nx, ny;
-    // Resolution is now often derived from the GeoTIFF's geotransform
-    double resolution;  // meters per cell
-
-    // DEM and water depth grids
-    std::vector<std::vector<double>> dem;
-    std::vector<std::vector<double>> h;  // water depth (m)
-
-    // Flow accumulation grid for visualization
-    std::vector<std::vector<double>> flowAccumulationGrid;
-
-    // Simulation parameters
-    double n_manning;    // Manning's roughness coefficient
-    double Ks;           // infiltration rate (m/s)
-    double min_depth;    // minimum water depth threshold
-    double totalTime;    // total simulation time in seconds
-    double time;         // current simulation time
-    double dt;           // time step (s)
-    double rainfallRate; // constant rainfall rate (m/s)
-    
-    // Time-varying rainfall parameters
-    bool useTimeVaryingRainfall; // Whether to use time-varying rainfall
-    QVector<QPair<double, double>> rainfallSchedule; // (time, rainfall rate) pairs
-
-    // Outlet-related variables
-    // Outlet cells along bottom row (index j values) based on lowest 10% of elevations
-    std::vector<int> outletCells;
-    int outletRow;
-    bool useManualOutlets;
-    double outletPercentile;  // The percentile used for automatic outlet selection
-    QVector<QPoint> manualOutletCells;
-
-    // Total drainage volume (m^3) over time (accumulated discharge)
-    double drainageVolume;
-    
-    // Store drainage volume per outlet cell
-    QMap<QPoint, double> perOutletDrainage;
-    
-    // Store time series data (time, drainage volume)
-    QVector<QPair<double, double>> drainageTimeSeries;
-    
-    // Display options
-    bool showGrid = true;
-    bool showRulers = false; // Default to rulers disabled initially
-    int gridInterval = 10;
-
-    // Helper functions
-    void computeDefaultAutomaticOutletCells();
-    void computeOutletCellsByPercentile(double percentile);
+    // Internal simulation methods
+    /**
+     * @brief Routes water through preferential flow paths
+     * 
+     * Implements:
+     * 1. Depression filling
+     * 2. Flow direction computation
+     * 3. Flow accumulation tracking
+     * 4. Multi-outlet routing
+     */
     void routeWaterToOutlets();
+
+    /**
+     * @brief Computes outlet cells based on percentile
+     * @param percentile Percentile for outlet selection
+     */
+    void computeOutletCellsByPercentile(double percentile);
+
+    /**
+     * @brief Computes default automatic outlet cells
+     */
+    void computeDefaultAutomaticOutletCells();
+
+    // Member variables with detailed documentation
+    double n_manning;      ///< Manning's roughness coefficient
+    double Ks;            ///< Infiltration rate (m/s)
+    double min_depth;     ///< Minimum water depth (m)
+    double rainfallRate;  ///< Current rainfall intensity (m/s)
+    double time;          ///< Current simulation time (s)
+    double totalTime;     ///< Total simulation duration (s)
+    double dt;            ///< Current time step (s)
+    double drainageVolume; ///< Total drainage volume (m³)
+    
+    // Grid properties
+    int nx, ny;           ///< Grid dimensions
+    double resolution;    ///< Cell size (m)
+    
+    // Simulation grids
+    std::vector<std::vector<double>> dem; ///< Ground elevation grid (m)
+    std::vector<std::vector<double>> h;   ///< Water depth grid (m)
+    std::vector<std::vector<double>> flowAccumulationGrid; ///< Flow accumulation grid
+    
+    // Outlet management
+    bool useManualOutlets;             ///< Manual outlet selection flag
+    double outletPercentile;           ///< Percentile for auto-outlets
+    int outletRow;                     ///< Outlet row index
+    std::vector<int> outletCells;      ///< Outlet cell indices
+    QVector<QPoint> manualOutletCells; ///< Manual outlet cell coordinates
+    
+    // Rainfall configuration
+    bool useTimeVaryingRainfall;       ///< Time-varying rainfall flag
+    QVector<QPair<double, double>> rainfallSchedule; ///< Rainfall schedule
+    
+    // Drainage tracking
+    QVector<QPair<double, double>> drainageTimeSeries; ///< Drainage time series
+    QMap<QPoint, double> perOutletDrainage; ///< Per-outlet drainage volumes
+    
+    // Visualization state
+    bool showGrid;                     ///< Grid overlay flag
+    bool showRulers;                   ///< Ruler overlay flag
+    int gridInterval;                  ///< Grid line spacing
 };
 
 #endif // SIMULATIONENGINE_H
